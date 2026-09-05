@@ -26,7 +26,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -199,6 +199,27 @@ def init_db() -> None:
             if col not in catalog_columns:
                 con.execute(f"ALTER TABLE catalog_items ADD COLUMN {col} {ddl}")
 
+        resource_columns = {x["name"] for x in con.execute("PRAGMA table_info(resources)")}
+        for col, ddl in {
+            "collection_id": "INTEGER",
+            "avoid_duplicates": "INTEGER NOT NULL DEFAULT 1",
+        }.items():
+            if col not in resource_columns:
+                con.execute(f"ALTER TABLE resources ADD COLUMN {col} {ddl}")
+
+        # Migra únicamente la plantilla base creada por Sorprezz; no toca plantillas personalizadas.
+        base_tpl = con.execute("SELECT id FROM folder_templates WHERE name='Flujo base Sorprezz'").fetchone()
+        if base_tpl:
+            con.execute(
+                "UPDATE folder_templates SET description=?, updated_at=? WHERE id=?",
+                ("Estructura general para revisar, clasificar y seleccionar imágenes.", now_iso(), base_tpl["id"]),
+            )
+            con.execute(
+                "UPDATE folder_template_items SET folder_path='06 COLECCIONES' "
+                "WHERE template_id=? AND UPPER(folder_path)='06 LISTOS PARA CATÁLOGO'",
+                (base_tpl["id"],),
+            )
+
         count = con.execute("SELECT COUNT(*) AS c FROM categories").fetchone()["c"]
         if count == 0:
             con.executemany(
@@ -208,15 +229,15 @@ def init_db() -> None:
         if con.execute("SELECT COUNT(*) AS c FROM tags").fetchone()["c"] == 0:
             con.executemany(
                 "INSERT INTO tags(name, created_at) VALUES (?,?)",
-                [(x, now_iso()) for x in ["Por revisar", "Favorito", "Seleccionado", "Listo para catálogo"]],
+                [(x, now_iso()) for x in ["Por revisar", "Favorito", "Seleccionado", "Para colección"]],
             )
         if con.execute("SELECT COUNT(*) AS c FROM folder_templates").fetchone()["c"] == 0:
             cur = con.execute(
                 "INSERT INTO folder_templates(name,description,created_at,updated_at) VALUES (?,?,?,?)",
-                ("Flujo base Sorprezz", "Estructura general para revisar, preparar y seleccionar diseños de sublimación.", now_iso(), now_iso()),
+                ("Flujo base Sorprezz", "Estructura general para revisar, clasificar y seleccionar imágenes.", now_iso(), now_iso()),
             )
             tid = cur.lastrowid
-            starter = ["01 ORIGINALES", "02 EDITABLES", "03 PNG", "04 MOCKUPS", "05 SELECCIONADOS", "06 LISTOS PARA CATÁLOGO"]
+            starter = ["01 ORIGINALES", "02 EDITABLES", "03 PNG", "04 MOCKUPS", "05 SELECCIONADOS", "06 COLECCIONES"]
             con.executemany(
                 "INSERT INTO folder_template_items(template_id,folder_path,sort_order) VALUES (?,?,?)",
                 [(tid, x, i) for i, x in enumerate(starter)],
@@ -251,7 +272,7 @@ def save_config(cfg: dict) -> None:
 
 
 def ensure_library(root: Path) -> None:
-    for folder in ["Biblioteca", "Catalogo_Sorprezz", "Colecciones_Web", "Exportaciones", "Temporales"]:
+    for folder in ["Biblioteca", "Colecciones_Web", "Exportaciones", "Temporales"]:
         (root / folder).mkdir(parents=True, exist_ok=True)
 
 
@@ -426,6 +447,26 @@ def repair_existing_downloads() -> int:
     return repaired
 
 
+def sync_resource_to_selected_collection(rid: int) -> dict:
+    """Copia las imágenes indexadas de un recurso a la colección elegida al registrarlo."""
+    with db() as con:
+        row = con.execute("SELECT collection_id FROM resources WHERE id=?", (rid,)).fetchone()
+        if not row or not row["collection_id"]:
+            return {"added": 0, "skipped": 0}
+        placeholders = ",".join("?" for _ in PREVIEW_EXTS)
+        refs = [dict(x) for x in con.execute(
+            f"SELECT resource_id, rel_path AS path FROM files "
+            f"WHERE resource_id=? AND LOWER(ext) IN ({placeholders}) ORDER BY rel_path COLLATE NOCASE",
+            (rid, *sorted(PREVIEW_EXTS)),
+        )]
+    if not refs:
+        return {"added": 0, "skipped": 0}
+    try:
+        return add_assets_to_collection(int(row["collection_id"]), refs)
+    except Exception:
+        # La descarga nunca se marca como fallida solo porque la colección no pudo sincronizarse.
+        return {"added": 0, "skipped": len(refs)}
+
 def download_worker(rid: int) -> None:
     resource = get_resource(rid)
     if not resource:
@@ -528,6 +569,7 @@ def download_worker(rid: int) -> None:
             with active_lock:
                 active_downloads[rid] = {"progress": 100, "message": f"Completado: {count} archivos"}
 
+        sync_resource_to_selected_collection(rid)
         time.sleep(1)
 
     except Exception as e:
@@ -551,6 +593,7 @@ def download_worker(rid: int) -> None:
                                 "progress": 100,
                                 "message": f"Completado: {count} archivos encontrados",
                             }
+                        sync_resource_to_selected_collection(rid)
                         recovered = True
                 except Exception:
                     pass
@@ -582,6 +625,9 @@ class ResourceIn(BaseModel):
     url: str
     category_id: int
     subcategory_id: Optional[int] = None
+    tag_ids: list[int] = []
+    collection_id: Optional[int] = None
+    avoid_duplicates: bool = True
 
 
 class ConfigIn(BaseModel):
@@ -794,18 +840,48 @@ def resource_create(payload: ResourceIn):
         extract_drive_info(url)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    try:
+
+    if payload.collection_id:
         with db() as con:
+            if not con.execute("SELECT id FROM collections WHERE id=?", (payload.collection_id,)).fetchone():
+                raise HTTPException(404, "La colección seleccionada no existe")
+
+    with db() as con:
+        existing = con.execute("SELECT id FROM resources WHERE url=?", (url,)).fetchone()
+        if existing:
+            if payload.avoid_duplicates:
+                raise HTTPException(409, "Este enlace ya está registrado en la biblioteca")
+            rid = int(existing["id"])
+            con.execute(
+                """UPDATE resources
+                   SET name=?,category_id=?,subcategory_id=?,collection_id=?,avoid_duplicates=?,updated_at=?
+                   WHERE id=?""",
+                (name, payload.category_id, payload.subcategory_id, payload.collection_id,
+                 1 if payload.avoid_duplicates else 0, now_iso(), rid),
+            )
+        else:
             cur = con.execute(
                 """
-                INSERT INTO resources(name,url,category_id,subcategory_id,status,created_at,updated_at)
-                VALUES (?,?,?,?, 'pendiente', ?, ?)
+                INSERT INTO resources(
+                    name,url,category_id,subcategory_id,status,collection_id,avoid_duplicates,created_at,updated_at
+                )
+                VALUES (?,?,?,?, 'pendiente', ?, ?, ?, ?)
                 """,
-                (name, url, payload.category_id, payload.subcategory_id, now_iso(), now_iso()),
+                (name, url, payload.category_id, payload.subcategory_id, payload.collection_id,
+                 1 if payload.avoid_duplicates else 0, now_iso(), now_iso()),
             )
-            rid = cur.lastrowid
-    except sqlite3.IntegrityError:
-        raise HTTPException(409, "Este enlace ya está registrado en la biblioteca")
+            rid = int(cur.lastrowid)
+
+        # Las etiquetas elegidas en Descargas se asignan al recurso completo.
+        con.execute("DELETE FROM resource_tags WHERE resource_id=?", (rid,))
+        valid_tag_ids = []
+        for tid in payload.tag_ids:
+            if con.execute("SELECT id FROM tags WHERE id=?", (int(tid),)).fetchone():
+                valid_tag_ids.append(int(tid))
+        con.executemany(
+            "INSERT OR IGNORE INTO resource_tags(resource_id,tag_id) VALUES (?,?)",
+            [(rid, tid) for tid in valid_tag_ids],
+        )
     return get_resource(rid)
 
 
@@ -2028,9 +2104,8 @@ def stats():
         errors = con.execute("SELECT COUNT(*) c FROM resources WHERE status='error'").fetchone()["c"]
         files = con.execute("SELECT COALESCE(SUM(file_count),0) c FROM resources").fetchone()["c"]
         bytes_ = con.execute("SELECT COALESCE(SUM(total_bytes),0) c FROM resources").fetchone()["c"]
-        catalog = con.execute("SELECT COUNT(*) c FROM catalog_items").fetchone()["c"]
         collections = con.execute("SELECT COUNT(*) c FROM collections").fetchone()["c"]
-    return {"resources": total, "completed": completed, "pending": pending, "errors": errors, "files": files, "bytes": bytes_, "catalog": catalog, "collections": collections}
+    return {"resources": total, "completed": completed, "pending": pending, "errors": errors, "files": files, "bytes": bytes_, "collections": collections}
 
 
 if __name__ == "__main__":
