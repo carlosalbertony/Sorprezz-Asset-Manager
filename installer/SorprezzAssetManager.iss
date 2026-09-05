@@ -1,5 +1,5 @@
 #define MyAppName "Sorprezz Asset Manager"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "Sorprezz"
 #define MyAppExeName "SorprezzAssetManager.exe"
 
