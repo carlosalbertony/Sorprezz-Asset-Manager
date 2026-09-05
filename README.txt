@@ -1,72 +1,104 @@
-SORPREZZ ASSET MANAGER V1.4.1
+SORPREZZ ASSET MANAGER V1.5.0
 
-NOVEDADES PRINCIPALES
-- Explorador interno de carpetas y archivos.
-- Vista previa de imágenes JPG, JPEG, PNG, WEBP, GIF y BMP.
-- Navegación por estructura de carpetas sin salir de la aplicación.
-- Crear nuevas carpetas dentro de un recurso descargado.
-- Seleccionar, copiar y mover archivos a otras carpetas internas.
-- Abrir archivos o subcarpetas directamente en Windows.
-- Nuevo Catálogo de Sublimación.
-- Seleccionar un diseño desde el Explorador y crear una copia de trabajo en Catalogo_Sorprezz.
-- Ficha de catálogo con producto, estado, SKU, precio referencial, etiquetas y notas.
-- Estados del catálogo: Seleccionado, En preparación, Listo para catálogo y Publicado.
-- Exportación CSV del catálogo.
-- Los originales descargados se mantienen separados del material del catálogo.
-- Los mensajes técnicos de Drive se muestran en Detalles y no saturan la pantalla principal.
+OBJETIVO
+Sorprezz Asset Manager organiza recursos descargados, permite revisar imágenes y archivos dentro de la aplicación y ayuda a preparar selecciones para el catálogo y para nuevas categorías de productos de la web.
+
+NOVEDADES V1.5.0
+- Nueva sección COLECCIONES WEB.
+- Banco global de imágenes: busca imágenes en todos los recursos descargados sin importar en qué carpeta se encuentren.
+- Etiquetas para archivos individuales, además de etiquetas para recursos y carpetas.
+- Etiquetado en grupo desde el Explorador.
+- Crear una colección física a partir de una selección de imágenes.
+- Crear una colección física directamente desde una etiqueta.
+- Una colección puede mezclar imágenes tomadas de distintos recursos y carpetas.
+- Cada colección se guarda físicamente en Colecciones_Web/Categoría/Nombre de colección.
+- Los archivos originales de Biblioteca nunca se modifican al crear una colección: se generan copias.
+- Botón Descargar / Exportar para copiar una imagen o una selección a cualquier carpeta de Windows.
+- Botón Descargar ZIP para colecciones.
+- Botón Descargar visible en Biblioteca y Detalles para iniciar o actualizar una descarga.
+- Añadir una selección global de imágenes al Catálogo de Sublimación.
+- Etiquetas de archivo se conservan al renombrar o mover archivos desde la aplicación.
+- Las referencias de Colecciones y Catálogo se actualizan cuando se mueve o renombra el archivo original desde Sorprezz.
+- Mejor nombre de la herramienta de plantillas: “Crear carpetas desde plantilla”.
+
+FLUJO RECOMENDADO PARA CREAR UNA NUEVA CATEGORÍA DE PRODUCTOS PARA LA WEB
+1. En Explorador, revisa imágenes de cualquier recurso.
+2. Selecciona las imágenes que te interesan.
+3. Pulsa “Etiquetar selección” y asigna una etiqueta, por ejemplo: NUEVA COLECCIÓN VERANO.
+4. Repite el proceso en otras carpetas o recursos usando la misma etiqueta.
+5. Entra en “Colecciones web”.
+6. Pulsa “Crear desde etiqueta”.
+7. Elige la etiqueta y escribe una categoría web, por ejemplo: Camisetas Verano.
+8. Escribe el nombre de la colección.
+9. Sorprezz crea una carpeta física nueva y copia allí todas las imágenes etiquetadas.
+10. Desde esa colección puedes abrir la carpeta, crear un ZIP o continuar preparando los productos para el catálogo.
+
+OTRA FORMA DE CREAR UNA COLECCIÓN
+En “Colecciones web” puedes usar el Banco global de imágenes, filtrar por etiqueta, categoría, recurso o texto, seleccionar imágenes de distintos lugares y pulsar “Crear colección / carpeta”.
 
 ESTRUCTURA DE DATOS
 Biblioteca: material descargado y original.
-Catalogo_Sorprezz: copias seleccionadas para trabajar productos de sublimación.
-Exportaciones: archivos ZIP y exportaciones.
+Colecciones_Web: grupos de copias creados para nuevas categorías, campañas o secciones de la web.
+Catalogo_Sorprezz: copias seleccionadas con ficha comercial para sublimación.
+Exportaciones: ZIP y archivos exportados.
 Temporales: archivos temporales.
 
-ACTUALIZACIÓN
-Instalar V1.4.1 encima de V1.2.0, V1.3.0 o V1.4.0. La base de datos y la biblioteca permanecen fuera de la carpeta de instalación.
+ETIQUETAS
+Se pueden aplicar a:
+- Recursos completos.
+- Carpetas internas.
+- Archivos individuales.
+- Grupos de archivos seleccionados.
 
-UTILIDADES DEL EXPLORADOR
-- Navega por la estructura real de carpetas.
-- Doble clic en carpetas para entrar.
-- Abre archivos con su programa predeterminado de Windows.
-- Crea carpetas nuevas dentro del recurso.
-- Renombra archivos desde la interfaz.
-- Selecciona varios archivos para copiar o mover.
-- Genera un ZIP solo con la selección.
+EXPLORADOR
+- Galería y lista.
 - Vista previa de JPG, JPEG, PNG, WEBP, GIF, BMP y SVG.
+- Crear carpetas.
+- Renombrar archivos y carpetas.
+- Abrir archivos y carpetas en Windows.
+- Copiar y mover archivos dentro del recurso.
+- Etiquetar uno o varios archivos.
+- Crear ZIP de una selección.
+- Descargar/exportar una copia de uno o varios archivos a otra carpeta de Windows.
+- Crear una Colección Web directamente desde la selección.
+- Agregar diseños al Catálogo.
+- Aplicar plantillas de carpetas.
 
-FICHA DE CATÁLOGO DE SUBLIMACIÓN
+COLECCIONES WEB
+- Crear colección vacía.
+- Crear colección desde una selección global.
+- Crear colección desde una etiqueta.
+- Mezclar imágenes provenientes de distintos recursos.
+- Crear categoría física para la web.
+- Abrir la carpeta física.
+- Descargar ZIP.
+- Eliminar una copia de la colección sin borrar el original.
+- Eliminar una colección completa sin tocar Biblioteca.
+
+CATÁLOGO DE SUBLIMACIÓN
 - Nombre comercial.
 - Producto.
-- Técnica (Sublimación, DTF, Vinil textil u Otro).
-- Medida o área de impresión.
-- Variantes (tallas, colores o modelos).
-- Estado de preparación.
+- Técnica.
+- Medida / área de impresión.
+- Variantes.
+- Estado.
 - SKU.
 - Precio referencial.
 - Etiquetas.
 - Notas.
+- Exportación CSV.
 
-La versión 1.4.1 mantiene la base de datos existente de V1.2 y crea las tablas nuevas sin borrar recursos previos.
+PLANTILLAS DE CARPETAS
+La función antes llamada “Crear estructura física” ahora se presenta como “Crear carpetas desde plantilla”.
+Permite guardar una estructura de carpetas y aplicarla dentro de un recurso. No elimina ni modifica los archivos existentes.
 
+SINCRONIZACIÓN
+Si se agregan, mueven o eliminan archivos manualmente desde Windows, usa “Sincronizar biblioteca” o “Reindexar” para actualizar los conteos y vistas de la aplicación.
 
-NOVEDADES V1.4.1
-- Etiquetas reutilizables para recursos y carpetas.
-- Búsqueda y filtro de biblioteca por etiquetas.
-- Listas/plantillas de carpetas reutilizables.
-- Soporte para rutas anidadas dentro de las listas (por ejemplo MOCKUPS/Camiseta blanca).
-- Creación física de toda una estructura de carpetas desde el Explorador con un clic.
-- Las listas se pueden editar y eliminar sin afectar carpetas físicas ya creadas.
-- Etiquetas visibles en recursos y carpetas del Explorador.
+ACTUALIZACIÓN
+V1.5.0 puede instalarse encima de V1.2.0, V1.3.0, V1.4.0, V1.4.1 o V1.4.2.
+No desinstales la versión anterior antes de actualizar.
+La base de datos y la biblioteca están fuera de la carpeta de instalación y deben conservarse.
 
-
-CORRECCIONES V1.4.1
-- Los recursos con archivos locales ya no aparecen en Inicio como “Descargado con aviso”.
-- Las incidencias de Google Drive se conservan solo como nota técnica dentro de Detalles.
-- Nueva herramienta “Sincronizar biblioteca” para actualizar conteos después de cambios manuales en Windows.
-- Botón de etiquetas disponible directamente desde Biblioteca e Inicio.
-- El Explorador conserva la carpeta actual después de crear, renombrar, mover, copiar o aplicar una lista.
-- Las carpetas del Explorador ahora se pueden renombrar y etiquetar directamente.
-- El Catálogo permite agregar varios diseños seleccionados de una sola vez.
-- Catálogo y Biblioteca incluyen “Limpiar filtros” y mensajes de vacío más claros.
-- Las listas de carpetas se pueden aplicar directamente desde “Etiquetas y listas” a un recurso seleccionado.
-- Mejoras de diseño responsive para evitar botones cortados en ventanas medianas.
+NOTA SOBRE GOOGLE DRIVE
+La descarga desde enlaces compartidos continúa utilizando el motor actual basado en enlaces de Google Drive. La V1.5 mejora la organización, selección, etiquetado, exportación y preparación del material después de la descarga. Una integración oficial OAuth/Google Drive API puede incorporarse en una versión posterior para validar de forma más robusta el 100% de las carpetas remotas.

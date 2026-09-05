@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +26,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -156,6 +157,36 @@ def init_db() -> None:
                 UNIQUE(template_id, folder_path COLLATE NOCASE),
                 FOREIGN KEY(template_id) REFERENCES folder_templates(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS file_tags (
+                resource_id INTEGER NOT NULL,
+                rel_path TEXT NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY(resource_id, rel_path, tag_id),
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE CASCADE,
+                FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS collections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'General',
+                description TEXT,
+                physical_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(category, name COLLATE NOCASE)
+            );
+            CREATE TABLE IF NOT EXISTS collection_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_id INTEGER NOT NULL,
+                resource_id INTEGER,
+                source_rel_path TEXT,
+                copied_path TEXT NOT NULL,
+                title TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(collection_id, resource_id, source_rel_path),
+                FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+                FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE SET NULL
+            );
             """
         )
         # Migraciones no destructivas para versiones futuras del catálogo.
@@ -220,7 +251,7 @@ def save_config(cfg: dict) -> None:
 
 
 def ensure_library(root: Path) -> None:
-    for folder in ["Biblioteca", "Catalogo_Sorprezz", "Exportaciones", "Temporales"]:
+    for folder in ["Biblioteca", "Catalogo_Sorprezz", "Colecciones_Web", "Exportaciones", "Temporales"]:
         (root / folder).mkdir(parents=True, exist_ok=True)
 
 
@@ -347,6 +378,11 @@ def index_resource(rid: int, path: Path) -> tuple[int, int]:
         con.executemany(
             "INSERT OR REPLACE INTO files(resource_id, rel_path, ext, size_bytes, created_at) VALUES (?,?,?,?,?)",
             file_rows,
+        )
+        # Elimina etiquetas de archivos que ya no existen físicamente.
+        con.execute(
+            "DELETE FROM file_tags WHERE resource_id=? AND rel_path NOT IN (SELECT rel_path FROM files WHERE resource_id=?)",
+            (rid, rid),
         )
         con.execute(
             "UPDATE resources SET file_count=?, total_bytes=?, updated_at=? WHERE id=?",
@@ -586,6 +622,45 @@ class FolderTagAssignIn(BaseModel):
     tag_ids: list[int] = []
 
 
+class FileTagAssignIn(BaseModel):
+    path: str
+    tag_ids: list[int] = []
+
+
+class FileTagBulkIn(BaseModel):
+    paths: list[str] = []
+    tag_ids: list[int] = []
+    mode: str = "add"
+
+
+class SelectionExportIn(BaseModel):
+    paths: list[str] = []
+    destination_dir: str
+    folder_name: str = ""
+
+
+class CollectionIn(BaseModel):
+    name: str
+    category: str = "General"
+    description: str = ""
+
+
+class CollectionAssetRef(BaseModel):
+    resource_id: int
+    path: str
+
+
+class CollectionAddItemsIn(BaseModel):
+    items: list[CollectionAssetRef] = []
+
+
+class CollectionFromTagIn(BaseModel):
+    name: str
+    category: str = "General"
+    description: str = ""
+    tag_id: int
+
+
 class FolderTemplateIn(BaseModel):
     name: str
     description: str = ""
@@ -734,6 +809,14 @@ def resource_create(payload: ResourceIn):
     return get_resource(rid)
 
 
+def normalize_search_text(value: str) -> str:
+    """Normaliza mayúsculas, acentos y espacios para búsquedas tolerantes."""
+    value = unicodedata.normalize("NFKD", str(value or ""))
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r"\\s+", " ", value).strip().lower()
+    return value
+
+
 @app.get("/api/resources")
 def resources(q: str = "", category_id: Optional[int] = None, status: str = "", tag_id: Optional[int] = None):
     sql = """
@@ -744,10 +827,6 @@ def resources(q: str = "", category_id: Optional[int] = None, status: str = "", 
         WHERE 1=1
     """
     params = []
-    if q.strip():
-        sql += " AND (r.name LIKE ? OR r.url LIKE ? OR c.name LIKE ? OR s.name LIKE ? OR EXISTS (SELECT 1 FROM resource_tags rt JOIN tags t ON t.id=rt.tag_id WHERE rt.resource_id=r.id AND t.name LIKE ?))"
-        like = f"%{q.strip()}%"
-        params.extend([like, like, like, like, like])
     if category_id:
         sql += " AND r.category_id=?"
         params.append(category_id)
@@ -758,10 +837,34 @@ def resources(q: str = "", category_id: Optional[int] = None, status: str = "", 
         sql += " AND EXISTS (SELECT 1 FROM resource_tags rt WHERE rt.resource_id=r.id AND rt.tag_id=?)"
         params.append(tag_id)
     sql += " ORDER BY r.updated_at DESC"
+
     with db() as con:
         rows = [dict(r) for r in con.execute(sql, params)]
         for row in rows:
-            row["tags"] = [dict(x) for x in con.execute("SELECT t.id,t.name FROM tags t JOIN resource_tags rt ON rt.tag_id=t.id WHERE rt.resource_id=? ORDER BY t.name COLLATE NOCASE", (row["id"],))]
+            row["tags"] = [dict(x) for x in con.execute(
+                "SELECT t.id,t.name FROM tags t JOIN resource_tags rt ON rt.tag_id=t.id WHERE rt.resource_id=? ORDER BY t.name COLLATE NOCASE",
+                (row["id"],),
+            )]
+
+    # Búsqueda en memoria: permite buscar sin acentos y por varias palabras.
+    # Ej.: "dia mujer" encuentra "8m día de la mujer".
+    query = normalize_search_text(q)
+    if query:
+        terms = [x for x in query.split(" ") if x]
+        filtered_rows = []
+        for row in rows:
+            searchable = " ".join([
+                str(row.get("name") or ""),
+                str(row.get("url") or ""),
+                str(row.get("category_name") or ""),
+                str(row.get("subcategory_name") or ""),
+                " ".join(str(t.get("name") or "") for t in row.get("tags", [])),
+            ])
+            haystack = normalize_search_text(searchable)
+            if all(term in haystack for term in terms):
+                filtered_rows.append(row)
+        rows = filtered_rows
+
     with active_lock:
         for r in rows:
             if r["id"] in active_downloads:
@@ -909,9 +1012,15 @@ def resource_browse(rid: int, path: str = ""):
         folder_tag_rows = [dict(x) for x in con.execute(
             "SELECT ft.rel_path,t.id,t.name FROM folder_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.resource_id=?", (rid,)
         )]
+        file_tag_rows = [dict(x) for x in con.execute(
+            "SELECT ft.rel_path,t.id,t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.resource_id=?", (rid,)
+        )]
     folder_tags_map = {}
     for tr in folder_tag_rows:
         folder_tags_map.setdefault(tr["rel_path"], []).append({"id": tr["id"], "name": tr["name"]})
+    file_tags_map = {}
+    for tr in file_tag_rows:
+        file_tags_map.setdefault(tr["rel_path"], []).append({"id": tr["id"], "name": tr["name"]})
     for p in entries:
         rel = str(p.relative_to(root)).replace("\\", "/")
         if p.is_dir():
@@ -928,7 +1037,7 @@ def resource_browse(rid: int, path: str = ""):
             ext = p.suffix.lower().lstrip(".") or "sin_extension"
             items.append({
                 "kind": "file", "name": p.name, "path": rel, "ext": ext, "size_bytes": size,
-                "previewable": ext in PREVIEW_EXTS, "cataloged": rel in cataloged,
+                "previewable": ext in PREVIEW_EXTS, "cataloged": rel in cataloged, "tags": file_tags_map.get(rel, []),
             })
     current_rel = str(current.relative_to(root)).replace("\\", "/") if current != root else ""
     parent_rel = ""
@@ -978,18 +1087,40 @@ def resource_organize_files(rid: int, payload: FileOrganizeIn):
         if not src.exists() or not src.is_file():
             continue
         dst = unique_destination(target_dir / src.name)
+        new_rel = str(dst.relative_to(root)).replace("\\", "/")
         if payload.operation == "copy":
             shutil.copy2(src, dst)
+            # Copia también las etiquetas del archivo original a la nueva copia.
+            with db() as con:
+                tag_rows = [x["tag_id"] for x in con.execute(
+                    "SELECT tag_id FROM file_tags WHERE resource_id=? AND rel_path=?", (rid, rel)
+                )]
+                for tid in tag_rows:
+                    con.execute(
+                        "INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)",
+                        (rid, new_rel, tid),
+                    )
         else:
             shutil.move(str(src), str(dst))
-            new_rel = str(dst.relative_to(root)).replace("\\", "/")
-            # Mantiene enlazados los elementos ya agregados al catálogo cuando se mueve su original.
+            # Mantiene enlazados catálogo y etiquetas cuando se mueve el original.
             with db() as con:
                 con.execute(
                     "UPDATE catalog_items SET source_rel_path=?, updated_at=? WHERE resource_id=? AND source_rel_path=?",
                     (new_rel, now_iso(), rid, rel),
                 )
-        done.append({"source": rel, "destination": str(dst.relative_to(root)).replace("\\", "/")})
+                con.execute(
+                    "UPDATE collection_items SET source_rel_path=? WHERE resource_id=? AND source_rel_path=?",
+                    (new_rel, rid, rel),
+                )
+                con.execute(
+                    "UPDATE OR IGNORE file_tags SET rel_path=? WHERE resource_id=? AND rel_path=?",
+                    (new_rel, rid, rel),
+                )
+                con.execute(
+                    "DELETE FROM file_tags WHERE resource_id=? AND rel_path=?",
+                    (rid, rel),
+                )
+        done.append({"source": rel, "destination": new_rel})
     count, total = index_resource(rid, root)
     return {"ok": True, "processed": len(done), "items": done, "file_count": count, "total_bytes": total}
 
@@ -1029,8 +1160,26 @@ def resource_rename(rid: int, payload: RenameIn):
                 if rp == old_rel or rp.startswith(old_rel + "/"):
                     changed = new_rel + rp[len(old_rel):]
                     con.execute("UPDATE catalog_items SET source_rel_path=?,updated_at=? WHERE id=?", (changed,now_iso(),row["id"]))
+            col_rows = [dict(x) for x in con.execute("SELECT id,source_rel_path FROM collection_items WHERE resource_id=? AND source_rel_path IS NOT NULL", (rid,))]
+            for row in col_rows:
+                rp = row["source_rel_path"]
+                if rp == old_rel or rp.startswith(old_rel + "/"):
+                    changed = new_rel + rp[len(old_rel):]
+                    con.execute("UPDATE collection_items SET source_rel_path=? WHERE id=?", (changed,row["id"]))
+            ftag_rows = [dict(x) for x in con.execute("SELECT rel_path,tag_id FROM file_tags WHERE resource_id=?", (rid,))]
+            for row in ftag_rows:
+                rp = row["rel_path"]
+                if rp == old_rel or rp.startswith(old_rel + "/"):
+                    changed = new_rel + rp[len(old_rel):]
+                    con.execute("DELETE FROM file_tags WHERE resource_id=? AND rel_path=? AND tag_id=?", (rid,rp,row["tag_id"]))
+                    con.execute("INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)", (rid,changed,row["tag_id"]))
         else:
             con.execute("UPDATE catalog_items SET source_rel_path=?,updated_at=? WHERE resource_id=? AND source_rel_path=?", (new_rel,now_iso(),rid,old_rel))
+            con.execute("UPDATE collection_items SET source_rel_path=? WHERE resource_id=? AND source_rel_path=?", (new_rel,rid,old_rel))
+            tag_rows = [x["tag_id"] for x in con.execute("SELECT tag_id FROM file_tags WHERE resource_id=? AND rel_path=?", (rid, old_rel))]
+            con.execute("DELETE FROM file_tags WHERE resource_id=? AND rel_path=?", (rid, old_rel))
+            for tid in tag_rows:
+                con.execute("INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)", (rid,new_rel,tid))
     index_resource(rid, root)
     return {"ok": True, "path": new_rel}
 
@@ -1092,7 +1241,8 @@ def tags_list():
         rows = [dict(x) for x in con.execute(
             """SELECT t.id,t.name,t.created_at,
                       (SELECT COUNT(*) FROM resource_tags rt WHERE rt.tag_id=t.id) AS resources,
-                      (SELECT COUNT(*) FROM folder_tags ft WHERE ft.tag_id=t.id) AS folders
+                      (SELECT COUNT(*) FROM folder_tags ft WHERE ft.tag_id=t.id) AS folders,
+                      (SELECT COUNT(*) FROM file_tags fit WHERE fit.tag_id=t.id) AS files
                FROM tags t ORDER BY t.name COLLATE NOCASE"""
         )]
     return rows
@@ -1119,6 +1269,7 @@ def tag_delete(tag_id: int):
             raise HTTPException(404, "Etiqueta no encontrada")
         con.execute("DELETE FROM resource_tags WHERE tag_id=?", (tag_id,))
         con.execute("DELETE FROM folder_tags WHERE tag_id=?", (tag_id,))
+        con.execute("DELETE FROM file_tags WHERE tag_id=?", (tag_id,))
         con.execute("DELETE FROM tags WHERE id=?", (tag_id,))
     return {"ok": True}
 
@@ -1167,6 +1318,391 @@ def folder_tags_set(rid: int, payload: FolderTagAssignIn):
             if con.execute("SELECT id FROM tags WHERE id=?", (tid,)).fetchone():
                 con.execute("INSERT OR IGNORE INTO folder_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)", (rid, rel, tid))
     return {"ok": True, "path": rel}
+
+
+
+
+@app.get("/api/resources/{rid}/file-tags")
+def file_tags_get(rid: int, path: str):
+    _, _, target = safe_resource_path(rid, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+    with db() as con:
+        return [dict(x) for x in con.execute(
+            "SELECT t.id,t.name FROM tags t JOIN file_tags ft ON ft.tag_id=t.id WHERE ft.resource_id=? AND ft.rel_path=? ORDER BY t.name COLLATE NOCASE",
+            (rid, path),
+        )]
+
+
+@app.put("/api/resources/{rid}/file-tags")
+def file_tags_set(rid: int, payload: FileTagAssignIn):
+    _, _, target = safe_resource_path(rid, payload.path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+    tag_ids = sorted(set(int(x) for x in payload.tag_ids))
+    with db() as con:
+        con.execute("DELETE FROM file_tags WHERE resource_id=? AND rel_path=?", (rid, payload.path))
+        for tid in tag_ids:
+            if con.execute("SELECT id FROM tags WHERE id=?", (tid,)).fetchone():
+                con.execute("INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)", (rid, payload.path, tid))
+    return {"ok": True, "path": payload.path}
+
+
+@app.put("/api/resources/{rid}/file-tags/bulk")
+def file_tags_bulk(rid: int, payload: FileTagBulkIn):
+    if payload.mode not in {"add", "remove", "replace"}:
+        raise HTTPException(400, "Modo de etiquetas no válido")
+    paths = list(dict.fromkeys(x for x in payload.paths if str(x).strip()))
+    tag_ids = sorted(set(int(x) for x in payload.tag_ids))
+    if not paths:
+        raise HTTPException(400, "Selecciona al menos un archivo")
+    valid_paths = []
+    for rel in paths:
+        try:
+            _, _, target = safe_resource_path(rid, rel)
+        except HTTPException:
+            continue
+        if target.exists() and target.is_file():
+            valid_paths.append(rel)
+    if not valid_paths:
+        raise HTTPException(400, "No hay archivos válidos en la selección")
+    with db() as con:
+        valid_tag_ids = [tid for tid in tag_ids if con.execute("SELECT id FROM tags WHERE id=?", (tid,)).fetchone()]
+        for rel in valid_paths:
+            if payload.mode == "replace":
+                con.execute("DELETE FROM file_tags WHERE resource_id=? AND rel_path=?", (rid, rel))
+            if payload.mode in {"add", "replace"}:
+                for tid in valid_tag_ids:
+                    con.execute("INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)", (rid, rel, tid))
+            elif payload.mode == "remove":
+                for tid in valid_tag_ids:
+                    con.execute("DELETE FROM file_tags WHERE resource_id=? AND rel_path=? AND tag_id=?", (rid, rel, tid))
+    return {"ok": True, "files": len(valid_paths), "tags": len(tag_ids), "mode": payload.mode}
+
+
+@app.post("/api/resources/{rid}/files/export")
+def resource_export_selection(rid: int, payload: SelectionExportIn):
+    if not payload.paths:
+        raise HTTPException(400, "Selecciona al menos un archivo")
+    destination = Path(payload.destination_dir).expanduser().resolve()
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(400, f"No se puede usar la carpeta de destino: {e}")
+    if payload.folder_name.strip():
+        destination = destination / slug_folder(payload.folder_name)
+        destination.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for rel in payload.paths:
+        _, _, src = safe_resource_path(rid, rel)
+        if not src.exists() or not src.is_file():
+            continue
+        dst = unique_destination(destination / src.name)
+        try:
+            if src.resolve() == dst.resolve():
+                continue
+        except Exception:
+            pass
+        shutil.copy2(src, dst)
+        copied.append(str(dst))
+    if not copied:
+        raise HTTPException(400, "No se copiaron archivos")
+    return {"ok": True, "files": len(copied), "destination": str(destination), "items": copied}
+
+
+@app.get("/api/assets")
+def global_assets(q: str = "", tag_id: Optional[int] = None, category_id: Optional[int] = None,
+                  resource_id: Optional[int] = None, images_only: bool = True, limit: int = 500):
+    limit = max(1, min(int(limit or 500), 1500))
+    sql = """
+        SELECT f.resource_id,f.rel_path,f.ext,f.size_bytes,r.name AS resource_name,
+               c.id AS category_id,c.name AS category_name,s.name AS subcategory_name
+        FROM files f
+        JOIN resources r ON r.id=f.resource_id
+        LEFT JOIN categories c ON c.id=r.category_id
+        LEFT JOIN subcategories s ON s.id=r.subcategory_id
+        WHERE r.local_path IS NOT NULL AND r.local_path<>''
+    """
+    params = []
+    if tag_id:
+        sql += " AND EXISTS (SELECT 1 FROM file_tags ft WHERE ft.resource_id=f.resource_id AND ft.rel_path=f.rel_path AND ft.tag_id=?)"
+        params.append(tag_id)
+    if category_id:
+        sql += " AND r.category_id=?"
+        params.append(category_id)
+    if resource_id:
+        sql += " AND r.id=?"
+        params.append(resource_id)
+    if images_only:
+        placeholders = ",".join("?" for _ in PREVIEW_EXTS)
+        sql += f" AND LOWER(f.ext) IN ({placeholders})"
+        params.extend(sorted(PREVIEW_EXTS))
+    sql += " ORDER BY r.name COLLATE NOCASE,f.rel_path COLLATE NOCASE LIMIT ?"
+    params.append(limit)
+    with db() as con:
+        rows = [dict(x) for x in con.execute(sql, params)]
+        tag_rows = [dict(x) for x in con.execute(
+            "SELECT ft.resource_id,ft.rel_path,t.id,t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id ORDER BY t.name COLLATE NOCASE"
+        )]
+    tag_map = {}
+    for tr in tag_rows:
+        tag_map.setdefault((tr["resource_id"], tr["rel_path"]), []).append({"id": tr["id"], "name": tr["name"]})
+    query = normalize_search_text(q)
+    terms = [x for x in query.split(" ") if x]
+    result = []
+    for row in rows:
+        row["tags"] = tag_map.get((row["resource_id"], row["rel_path"]), [])
+        if terms:
+            searchable = " ".join([
+                row.get("rel_path") or "", row.get("resource_name") or "", row.get("category_name") or "",
+                row.get("subcategory_name") or "", " ".join(t["name"] for t in row["tags"]),
+            ])
+            haystack = normalize_search_text(searchable)
+            if not all(term in haystack for term in terms):
+                continue
+        row["name"] = Path(row["rel_path"]).name
+        row["previewable"] = str(row.get("ext") or "").lower() in PREVIEW_EXTS
+        result.append(row)
+    return result
+
+
+def unique_directory(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for i in range(2, 10000):
+        candidate = path.with_name(f"{path.name} ({i})")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("No se pudo generar una carpeta disponible")
+
+
+def create_collection_record(name: str, category: str, description: str = "") -> dict:
+    name = name.strip()
+    category = category.strip() or "General"
+    if not name:
+        raise HTTPException(400, "Escribe un nombre para la colección")
+    with db() as con:
+        if con.execute("SELECT id FROM collections WHERE category=? COLLATE NOCASE AND name=? COLLATE NOCASE", (category, name)).fetchone():
+            raise HTTPException(409, "Ya existe una colección con ese nombre dentro de esa categoría")
+    base = library_root() / "Colecciones_Web" / slug_folder(category)
+    base.mkdir(parents=True, exist_ok=True)
+    physical = unique_directory(base / slug_folder(name))
+    physical.mkdir(parents=True, exist_ok=False)
+    with db() as con:
+        cur = con.execute(
+            "INSERT INTO collections(name,category,description,physical_path,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+            (name, category, description.strip(), str(physical), now_iso(), now_iso()),
+        )
+        cid = cur.lastrowid
+    return {"id": cid, "name": name, "category": category, "description": description.strip(), "physical_path": str(physical)}
+
+
+def add_assets_to_collection(collection_id: int, items: list[dict]) -> dict:
+    with db() as con:
+        col = con.execute("SELECT * FROM collections WHERE id=?", (collection_id,)).fetchone()
+    if not col:
+        raise HTTPException(404, "Colección no encontrada")
+    dest_dir = Path(col["physical_path"])
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    added = []
+    skipped = 0
+    for ref in items:
+        rid = int(ref.get("resource_id") or 0)
+        rel = str(ref.get("path") or "")
+        if not rid or not rel:
+            skipped += 1
+            continue
+        try:
+            _, _, src = safe_resource_path(rid, rel)
+        except HTTPException:
+            skipped += 1
+            continue
+        if not src.exists() or not src.is_file():
+            skipped += 1
+            continue
+        with db() as con:
+            existing = con.execute(
+                "SELECT id FROM collection_items WHERE collection_id=? AND resource_id=? AND source_rel_path=?",
+                (collection_id, rid, rel),
+            ).fetchone()
+        if existing:
+            skipped += 1
+            continue
+        dst = unique_destination(dest_dir / src.name)
+        shutil.copy2(src, dst)
+        with db() as con:
+            cur = con.execute(
+                "INSERT INTO collection_items(collection_id,resource_id,source_rel_path,copied_path,title,created_at) VALUES (?,?,?,?,?,?)",
+                (collection_id, rid, rel, str(dst), src.stem, now_iso()),
+            )
+            item_id = cur.lastrowid
+        added.append({"id": item_id, "resource_id": rid, "source_rel_path": rel, "copied_path": str(dst)})
+    with db() as con:
+        con.execute("UPDATE collections SET updated_at=? WHERE id=?", (now_iso(), collection_id))
+    return {"ok": True, "added": len(added), "skipped": skipped, "items": added}
+
+
+@app.get("/api/collections")
+def collections_list(q: str = ""):
+    with db() as con:
+        rows = [dict(x) for x in con.execute(
+            """SELECT c.*,
+                      (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id=c.id) AS item_count
+               FROM collections c ORDER BY c.updated_at DESC,c.name COLLATE NOCASE"""
+        )]
+    query = normalize_search_text(q)
+    if query:
+        rows = [r for r in rows if query in normalize_search_text(f"{r['name']} {r['category']} {r.get('description') or ''}")]
+    for r in rows:
+        total = 0
+        p = Path(r["physical_path"])
+        if p.exists():
+            for f in p.iterdir():
+                if f.is_file():
+                    try: total += f.stat().st_size
+                    except OSError: pass
+        r["total_bytes"] = total
+    return rows
+
+
+@app.post("/api/collections")
+def collection_create(payload: CollectionIn):
+    return create_collection_record(payload.name, payload.category, payload.description)
+
+
+@app.get("/api/collections/{cid}")
+def collection_detail(cid: int):
+    with db() as con:
+        c = con.execute("SELECT * FROM collections WHERE id=?", (cid,)).fetchone()
+        if not c:
+            raise HTTPException(404, "Colección no encontrada")
+        items = [dict(x) for x in con.execute(
+            """SELECT ci.*,r.name AS resource_name,c.name AS source_category,s.name AS source_subcategory
+               FROM collection_items ci
+               LEFT JOIN resources r ON r.id=ci.resource_id
+               LEFT JOIN categories c ON c.id=r.category_id
+               LEFT JOIN subcategories s ON s.id=r.subcategory_id
+               WHERE ci.collection_id=? ORDER BY ci.id DESC""", (cid,)
+        )]
+    result = dict(c)
+    for item in items:
+        p = Path(item["copied_path"])
+        item["exists"] = p.exists()
+        item["name"] = p.name if p.name else (item.get("title") or "Archivo")
+        item["ext"] = p.suffix.lower().lstrip(".")
+        item["previewable"] = item["ext"] in PREVIEW_EXTS
+        try: item["size_bytes"] = p.stat().st_size if p.exists() else 0
+        except OSError: item["size_bytes"] = 0
+    result["items"] = items
+    return result
+
+
+@app.post("/api/collections/{cid}/items")
+def collection_add_items(cid: int, payload: CollectionAddItemsIn):
+    refs = [{"resource_id": x.resource_id, "path": x.path} for x in payload.items]
+    return add_assets_to_collection(cid, refs)
+
+
+@app.post("/api/collections/from-tag")
+def collection_create_from_tag(payload: CollectionFromTagIn):
+    with db() as con:
+        tag = con.execute("SELECT id,name FROM tags WHERE id=?", (payload.tag_id,)).fetchone()
+        if not tag:
+            raise HTTPException(404, "Etiqueta no encontrada")
+        refs = [dict(x) for x in con.execute(
+            """SELECT ft.resource_id,ft.rel_path AS path
+               FROM file_tags ft JOIN files f ON f.resource_id=ft.resource_id AND f.rel_path=ft.rel_path
+               WHERE ft.tag_id=? ORDER BY ft.resource_id,ft.rel_path""", (payload.tag_id,)
+        )]
+    if not refs:
+        raise HTTPException(400, "No hay archivos etiquetados con esa etiqueta")
+    col = create_collection_record(payload.name, payload.category, payload.description)
+    result = add_assets_to_collection(col["id"], refs)
+    if result["added"] == 0:
+        with db() as con:
+            con.execute("DELETE FROM collections WHERE id=?", (col["id"],))
+        shutil.rmtree(Path(col["physical_path"]), ignore_errors=True)
+        raise HTTPException(400, "Los archivos etiquetados ya no están disponibles en la biblioteca")
+    return {**col, **result, "tag": tag["name"]}
+
+
+@app.get("/api/collections/{cid}/items/{item_id}/preview")
+def collection_item_preview(cid: int, item_id: int):
+    with db() as con:
+        row = con.execute("SELECT copied_path FROM collection_items WHERE id=? AND collection_id=?", (item_id, cid)).fetchone()
+    if not row:
+        raise HTTPException(404, "Elemento no encontrado")
+    p = Path(row["copied_path"])
+    if not p.exists() or p.suffix.lower().lstrip(".") not in PREVIEW_EXTS:
+        raise HTTPException(404, "Vista previa no disponible")
+    return FileResponse(p)
+
+
+@app.post("/api/collections/{cid}/open")
+def collection_open(cid: int):
+    with db() as con:
+        row = con.execute("SELECT physical_path FROM collections WHERE id=?", (cid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Colección no encontrada")
+    p = Path(row["physical_path"])
+    if not p.exists():
+        raise HTTPException(404, "La carpeta física de la colección no existe")
+    try:
+        open_os_path(p)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/collections/{cid}/zip")
+def collection_zip(cid: int):
+    with db() as con:
+        c = con.execute("SELECT * FROM collections WHERE id=?", (cid,)).fetchone()
+    if not c:
+        raise HTTPException(404, "Colección no encontrada")
+    src = Path(c["physical_path"])
+    if not src.exists():
+        raise HTTPException(404, "La carpeta física de la colección no existe")
+    out_dir = library_root() / "Exportaciones"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = out_dir / f"{slug_folder(c['category'])}_{slug_folder(c['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    archive = shutil.make_archive(str(base), "zip", root_dir=str(src))
+    try:
+        open_os_path(out_dir)
+    except Exception:
+        pass
+    return {"ok": True, "path": archive}
+
+
+@app.delete("/api/collections/{cid}/items/{item_id}")
+def collection_remove_item(cid: int, item_id: int, delete_copy: bool = True):
+    with db() as con:
+        row = con.execute("SELECT copied_path FROM collection_items WHERE id=? AND collection_id=?", (item_id, cid)).fetchone()
+        if not row:
+            raise HTTPException(404, "Elemento no encontrado")
+        con.execute("DELETE FROM collection_items WHERE id=?", (item_id,))
+        con.execute("UPDATE collections SET updated_at=? WHERE id=?", (now_iso(), cid))
+    if delete_copy:
+        p = Path(row["copied_path"])
+        if p.exists() and _is_within(p, library_root() / "Colecciones_Web"):
+            try: p.unlink()
+            except OSError: pass
+    return {"ok": True}
+
+
+@app.delete("/api/collections/{cid}")
+def collection_delete(cid: int, delete_files: bool = True):
+    with db() as con:
+        row = con.execute("SELECT physical_path FROM collections WHERE id=?", (cid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Colección no encontrada")
+        con.execute("DELETE FROM collection_items WHERE collection_id=?", (cid,))
+        con.execute("DELETE FROM collections WHERE id=?", (cid,))
+    if delete_files:
+        p = Path(row["physical_path"])
+        if p.exists() and _is_within(p, library_root() / "Colecciones_Web"):
+            shutil.rmtree(p, ignore_errors=True)
+    return {"ok": True}
 
 
 def normalize_template_folder_path(raw: str) -> str:
@@ -1493,7 +2029,8 @@ def stats():
         files = con.execute("SELECT COALESCE(SUM(file_count),0) c FROM resources").fetchone()["c"]
         bytes_ = con.execute("SELECT COALESCE(SUM(total_bytes),0) c FROM resources").fetchone()["c"]
         catalog = con.execute("SELECT COUNT(*) c FROM catalog_items").fetchone()["c"]
-    return {"resources": total, "completed": completed, "pending": pending, "errors": errors, "files": files, "bytes": bytes_, "catalog": catalog}
+        collections = con.execute("SELECT COUNT(*) c FROM collections").fetchone()["c"]
+    return {"resources": total, "completed": completed, "pending": pending, "errors": errors, "files": files, "bytes": bytes_, "catalog": catalog, "collections": collections}
 
 
 if __name__ == "__main__":
