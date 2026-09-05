@@ -1,71 +1,59 @@
-SORPREZZ ASSET MANAGER V1.1
-===========================
+SORPREZZ ASSET MANAGER V1.4.0
 
-OBJETIVO DE ESTA VERSIÓN
-Esta versión está preparada para convertirse en un instalador real de Windows:
+NOVEDADES PRINCIPALES
+- Explorador interno de carpetas y archivos.
+- Vista previa de imágenes JPG, JPEG, PNG, WEBP, GIF y BMP.
+- Navegación por estructura de carpetas sin salir de la aplicación.
+- Crear nuevas carpetas dentro de un recurso descargado.
+- Seleccionar, copiar y mover archivos a otras carpetas internas.
+- Abrir archivos o subcarpetas directamente en Windows.
+- Nuevo Catálogo de Sublimación.
+- Seleccionar un diseño desde el Explorador y crear una copia de trabajo en Catalogo_Sorprezz.
+- Ficha de catálogo con producto, estado, SKU, precio referencial, etiquetas y notas.
+- Estados del catálogo: Seleccionado, En preparación, Listo para catálogo y Publicado.
+- Exportación CSV del catálogo.
+- Los originales descargados se mantienen separados del material del catálogo.
+- Los mensajes técnicos de Drive se muestran en Detalles y no saturan la pantalla principal.
 
-  Sorprezz-Asset-Manager-Setup-v1.1.0.exe
+ESTRUCTURA DE DATOS
+Biblioteca: material descargado y original.
+Catalogo_Sorprezz: copias seleccionadas para trabajar productos de sublimación.
+Exportaciones: archivos ZIP y exportaciones.
+Temporales: archivos temporales.
 
-El usuario final NO necesita instalar Python, FastAPI, gdown ni abrir una consola.
-Todas las dependencias quedan empaquetadas dentro de la aplicación.
+ACTUALIZACIÓN
+Instalar V1.4.0 encima de V1.2.0. La base de datos y la biblioteca permanecen fuera de la carpeta de instalación.
 
-CAMBIO PRINCIPAL RESPECTO A V1.0
-- La interfaz se abre en su propia ventana de Windows, no como una pestaña normal del navegador.
-- Incluye selector nativo de carpeta para elegir la biblioteca.
-- Incluye configuración de PyInstaller.
-- Incluye instalador Inno Setup.
-- Incluye flujo de GitHub Actions para compilar automáticamente en Windows.
+UTILIDADES DEL EXPLORADOR
+- Navega por la estructura real de carpetas.
+- Doble clic en carpetas para entrar.
+- Abre archivos con su programa predeterminado de Windows.
+- Crea carpetas nuevas dentro del recurso.
+- Renombra archivos desde la interfaz.
+- Selecciona varios archivos para copiar o mover.
+- Genera un ZIP solo con la selección.
+- Vista previa de JPG, JPEG, PNG, WEBP, GIF, BMP y SVG.
 
-FUNCIONES
-- Categorías y subcategorías.
-- Registro de enlaces de Google Drive.
-- Detección de enlaces duplicados.
-- Descarga de carpetas y subcarpetas compartidas.
-- Organización Biblioteca/Categoría/Subcategoría/Nombre.
-- Historial y estados de descarga.
-- Buscador.
-- Indexación por tipo y tamaño de archivo.
-- Abrir carpeta local.
-- Reindexar.
-- Crear ZIP.
-- Elegir ubicación de la biblioteca.
+FICHA DE CATÁLOGO DE SUBLIMACIÓN
+- Nombre comercial.
+- Producto.
+- Técnica (Sublimación, DTF, Vinil textil u Otro).
+- Medida o área de impresión.
+- Variantes (tallas, colores o modelos).
+- Estado de preparación.
+- SKU.
+- Precio referencial.
+- Etiquetas.
+- Notas.
 
-DATOS DEL USUARIO
-La base de datos se guarda fuera de la carpeta de instalación en:
-  %LOCALAPPDATA%\SorprezzAssetManager\data
+La versión 1.4.0 mantiene la base de datos existente de V1.2 y crea las tablas nuevas sin borrar recursos previos.
 
-La biblioteca se guarda donde el usuario decida, por ejemplo:
-  D:\SORPREZZ_LIBRARY
 
-Por lo tanto, actualizar o reinstalar la aplicación no debería borrar la biblioteca ni la base de datos.
-
-COMPILAR AUTOMÁTICAMENTE CON GITHUB ACTIONS
-1. Crear un repositorio nuevo en GitHub.
-2. Subir el contenido de esta carpeta a la raíz del repositorio.
-3. Entrar en Actions -> Crear instalador de Windows.
-4. Pulsar Run workflow.
-5. Cuando termine, descargar el artefacto:
-   Sorprezz-Asset-Manager-Windows-Installer
-6. Dentro estará el instalador .exe.
-
-COMPILAR MANUALMENTE EN WINDOWS
-Requisitos solo para la computadora del desarrollador:
-- Python 3.12
-- Inno Setup 6
-
-Ejecutar:
-  build_windows.bat
-
-El instalador resultante aparecerá en:
-  release\Sorprezz-Asset-Manager-Setup-v1.1.0.exe
-
-NOTA SOBRE GOOGLE DRIVE
-V1.1 utiliza gdown para enlaces compartidos. La futura V2 deberá integrar OAuth oficial de Google Drive para carpetas privadas, mejor manejo de límites y descargas más robustas.
-
-CAMBIOS V1.2.0
-- Corrige falsos estados "Con error" cuando Google Drive sí dejó archivos descargados.
-- La app ahora indexa siempre el contenido local aunque gdown termine con una excepción.
-- Nuevo estado "Descargado con aviso" para carpetas utilizables con posibles archivos pendientes.
-- Al abrir la V1.2 se reparan automáticamente registros antiguos con 0 archivos si su carpeta local contiene material.
-- "Abrir carpeta" reindexa automáticamente el contenido para mantener conteo y tamaño sincronizados.
-- Reintentar descarga conserva e indexa lo que ya existe.
+NOVEDADES V1.4.0
+- Etiquetas reutilizables para recursos y carpetas.
+- Búsqueda y filtro de biblioteca por etiquetas.
+- Listas/plantillas de carpetas reutilizables.
+- Soporte para rutas anidadas dentro de las listas (por ejemplo MOCKUPS/Camiseta blanca).
+- Creación física de toda una estructura de carpetas desde el Explorador con un clic.
+- Las listas se pueden editar y eliminar sin afectar carpetas físicas ya creadas.
+- Etiquetas visibles en recursos y carpetas del Explorador.
