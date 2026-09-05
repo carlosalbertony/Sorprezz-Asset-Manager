@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -17,17 +18,17 @@ import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -58,6 +59,83 @@ def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     return con
+
+
+def canonical_rel_path(value: str | None) -> str:
+    """Ruta relativa estable para Windows/Linux: siempre usa / y nunca empieza/termina con /."""
+    return str(value or "").replace('\\', '/').strip('/')
+
+
+def fast_file_fingerprint(path: Path) -> str:
+    """Huella rápida para conservar etiquetas si un archivo es renombrado o movido manualmente."""
+    try:
+        size = path.stat().st_size
+        h = hashlib.blake2b(digest_size=16)
+        h.update(str(size).encode('ascii'))
+        with path.open('rb') as fh:
+            first = fh.read(65536)
+            h.update(first)
+            if size > 65536:
+                fh.seek(max(0, size - 65536))
+                h.update(fh.read(65536))
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def normalize_metadata_paths(con: sqlite3.Connection) -> None:
+    """Normaliza metadatos creados por versiones previas de Windows sin perder etiquetas."""
+    # files usa id y puede actualizarse directamente.
+    for row in [dict(x) for x in con.execute('SELECT id,resource_id,rel_path FROM files')]:
+        clean = canonical_rel_path(row['rel_path'])
+        if clean == row['rel_path']:
+            continue
+        try:
+            con.execute('UPDATE files SET rel_path=? WHERE id=?', (clean, row['id']))
+        except sqlite3.IntegrityError:
+            con.execute('DELETE FROM files WHERE id=?', (row['id'],))
+    # Tablas con clave compuesta: insertar forma canónica antes de borrar la antigua.
+    for table in ('file_tags','folder_tags'):
+        rows = [dict(x) for x in con.execute(f'SELECT resource_id,rel_path,tag_id FROM {table}') ]
+        for row in rows:
+            clean = canonical_rel_path(row['rel_path'])
+            if clean == row['rel_path']:
+                continue
+            con.execute(f'INSERT OR IGNORE INTO {table}(resource_id,rel_path,tag_id) VALUES (?,?,?)', (row['resource_id'],clean,row['tag_id']))
+            con.execute(f'DELETE FROM {table} WHERE resource_id=? AND rel_path=? AND tag_id=?', (row['resource_id'],row['rel_path'],row['tag_id']))
+    for table,col in (('collection_items','source_rel_path'),('catalog_items','source_rel_path')):
+        try:
+            rows=[dict(x) for x in con.execute(f'SELECT id,{col} FROM {table} WHERE {col} IS NOT NULL AND {col}<>""')]
+        except sqlite3.OperationalError:
+            continue
+        for row in rows:
+            clean=canonical_rel_path(row[col])
+            if clean!=row[col]:
+                try:
+                    con.execute(f'UPDATE {table} SET {col}=? WHERE id=?',(clean,row['id']))
+                except sqlite3.IntegrityError:
+                    pass
+
+
+def backup_metadata_db(prefix: str = 'sync') -> str | None:
+    """Copia de seguridad pequeña de la base antes de una sincronización global."""
+    try:
+        out_dir = DATA_DIR / 'Backups'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        target = out_dir / f"sorprezz_{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        src = db(); dst = sqlite3.connect(target)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close(); src.close()
+        # Mantener solo las 8 copias más recientes.
+        backups = sorted(out_dir.glob('sorprezz_*.db'), key=lambda x: x.stat().st_mtime, reverse=True)
+        for old in backups[8:]:
+            try: old.unlink()
+            except OSError: pass
+        return str(target)
+    except Exception:
+        return None
 
 
 def init_db() -> None:
@@ -210,6 +288,17 @@ def init_db() -> None:
             if col not in resource_columns:
                 con.execute(f"ALTER TABLE resources ADD COLUMN {col} {ddl}")
 
+        file_columns = {x["name"] for x in con.execute("PRAGMA table_info(files)")}
+        for col, ddl in {
+            "fingerprint": "TEXT",
+            "mtime_ns": "INTEGER",
+        }.items():
+            if col not in file_columns:
+                con.execute(f"ALTER TABLE files ADD COLUMN {col} {ddl}")
+
+        # V1.7.1: evita que Windows (\) y la interfaz web (/) representen la misma ruta de forma distinta.
+        normalize_metadata_paths(con)
+
         count = con.execute("SELECT COUNT(*) AS c FROM categories").fetchone()["c"]
         if count == 0:
             con.executemany(
@@ -266,6 +355,26 @@ def slug_folder(text: str) -> str:
     text = re.sub(r'[<>:"/\\|?*]+', " ", text).strip()
     text = re.sub(r"\s+", " ", text)
     return text[:100] or "Sin_nombre"
+
+
+def safe_upload_relative_path(raw: str | None, fallback_name: str) -> Path:
+    """Convierte la ruta enviada por el selector web en una ruta relativa segura.
+
+    Permite conservar subcarpetas al importar una carpeta completa, pero bloquea
+    rutas absolutas, ``..`` y caracteres no válidos en Windows.
+    """
+    value = str(raw or fallback_name or "archivo").replace("\\", "/").strip("/")
+    parts: list[str] = []
+    for part in PurePosixPath(value).parts:
+        part = str(part).strip()
+        if not part or part in {".", ".."}:
+            continue
+        clean = re.sub(r'[<>:"\\|?*]+', "_", part).strip().rstrip(".")
+        if clean:
+            parts.append(clean[:180])
+    if not parts:
+        parts = [re.sub(r'[<>:"/\\|?*]+', "_", Path(fallback_name or "archivo").name) or "archivo"]
+    return Path(*parts)
 
 
 PREVIEW_EXTS = {"jpg", "jpeg", "png", "webp", "gif", "bmp", "svg"}
@@ -359,33 +468,65 @@ def get_resource(rid: int):
 
 
 def index_resource(rid: int, path: Path) -> tuple[int, int]:
+    """Reindexa sin destruir etiquetas.
+
+    Las versiones anteriores reconstruían `files` usando \\ en Windows mientras las etiquetas
+    guardaban /. Al sincronizar, parecía que los archivos etiquetados ya no existían y se borraban
+    sus relaciones. Esta versión usa rutas canónicas y conserva metadatos incluso si un archivo fue
+    renombrado o movido manualmente (por huella rápida).
+    """
+    with db() as con:
+        old_files = [dict(x) for x in con.execute(
+            'SELECT rel_path,fingerprint,size_bytes,mtime_ns FROM files WHERE resource_id=?', (rid,)
+        )]
+        old_tag_rows = [dict(x) for x in con.execute(
+            'SELECT rel_path,tag_id FROM file_tags WHERE resource_id=?', (rid,)
+        )]
+
+    tags_by_path: dict[str, set[int]] = {}
+    for tr in old_tag_rows:
+        tags_by_path.setdefault(canonical_rel_path(tr['rel_path']), set()).add(int(tr['tag_id']))
+
+    old_fp_by_path = {canonical_rel_path(x['rel_path']): (x.get('fingerprint') or '') for x in old_files}
+    tags_by_fp: dict[str, set[int]] = {}
+    for rel, tids in tags_by_path.items():
+        fp = old_fp_by_path.get(rel)
+        if fp:
+            tags_by_fp.setdefault(fp, set()).update(tids)
+
     file_rows = []
+    remapped_tags: set[tuple[str,int]] = set()
     total = 0
     count = 0
-    for p in path.rglob("*"):
-        if p.is_file():
-            try:
-                size = p.stat().st_size
-            except OSError:
-                size = 0
-            rel = str(p.relative_to(path))
-            ext = p.suffix.lower().lstrip(".") or "sin_extension"
-            file_rows.append((rid, rel, ext, size, now_iso()))
-            total += size
-            count += 1
+    for p in path.rglob('*'):
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat(); size = st.st_size; mtime_ns = int(getattr(st, 'st_mtime_ns', 0) or 0)
+        except OSError:
+            size = 0; mtime_ns = 0
+        rel = canonical_rel_path(str(p.relative_to(path)))
+        ext = p.suffix.lower().lstrip('.') or 'sin_extension'
+        fp = fast_file_fingerprint(p)
+        file_rows.append((rid, rel, ext, size, now_iso(), fp, mtime_ns))
+        total += size; count += 1
+        tids = tags_by_path.get(rel) or (tags_by_fp.get(fp) if fp else None) or set()
+        for tid in tids:
+            remapped_tags.add((rel, int(tid)))
+
     with db() as con:
-        con.execute("DELETE FROM files WHERE resource_id=?", (rid,))
+        # No se eliminan file_tags: si un archivo se desconecta temporalmente, su clasificación queda
+        # guardada y reaparece cuando vuelve. Los conteos solo consideran archivos existentes.
+        normalize_metadata_paths(con)
+        con.execute('DELETE FROM files WHERE resource_id=?', (rid,))
         con.executemany(
-            "INSERT OR REPLACE INTO files(resource_id, rel_path, ext, size_bytes, created_at) VALUES (?,?,?,?,?)",
+            'INSERT OR REPLACE INTO files(resource_id,rel_path,ext,size_bytes,created_at,fingerprint,mtime_ns) VALUES (?,?,?,?,?,?,?)',
             file_rows,
         )
-        # Elimina etiquetas de archivos que ya no existen físicamente.
+        for rel, tid in remapped_tags:
+            con.execute('INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)', (rid, rel, tid))
         con.execute(
-            "DELETE FROM file_tags WHERE resource_id=? AND rel_path NOT IN (SELECT rel_path FROM files WHERE resource_id=?)",
-            (rid, rid),
-        )
-        con.execute(
-            "UPDATE resources SET file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+            'UPDATE resources SET file_count=?, total_bytes=?, updated_at=? WHERE id=?',
             (count, total, now_iso(), rid),
         )
     return count, total
@@ -680,6 +821,13 @@ class FileTagBulkIn(BaseModel):
     paths: list[str] = []
     tag_ids: list[int] = []
     mode: str = "add"
+
+
+class TagApplyFilesIn(BaseModel):
+    path: str = ""
+    tag_ids: list[int] = []
+    mode: str = "add"
+    images_only: bool = True
 
 
 class SelectionExportIn(BaseModel):
@@ -1104,8 +1252,10 @@ def resource_rescan(rid: int):
 
 @app.post("/api/resources/rescan-all")
 def resources_rescan_all():
-    """Reindexa todas las carpetas locales sin borrar ni mover archivos."""
+    """Reindexa toda la Biblioteca preservando categorías, etiquetas y colecciones."""
+    backup_path = backup_metadata_db('sync')
     with db() as con:
+        tag_links_before = int(con.execute("SELECT COUNT(*) AS c FROM file_tags").fetchone()["c"] or 0)
         rows = [dict(x) for x in con.execute(
             "SELECT id, local_path FROM resources WHERE local_path IS NOT NULL AND local_path <> '' ORDER BY id"
         )]
@@ -1135,7 +1285,14 @@ def resources_rescan_all():
                     )
         except Exception:
             continue
-    return {"ok": True, "resources": scanned, "files": files, "total_bytes": total_bytes, "missing": missing}
+    with db() as con:
+        tag_links_after = int(con.execute("SELECT COUNT(*) AS c FROM file_tags").fetchone()["c"] or 0)
+    return {
+        "ok": True, "resources": scanned, "files": files, "total_bytes": total_bytes,
+        "missing": missing, "backup": backup_path,
+        "tag_links_before": tag_links_before, "tag_links_after": tag_links_after,
+        "tags_preserved": tag_links_after >= tag_links_before,
+    }
 
 
 @app.post("/api/resources/{rid}/open")
@@ -1365,6 +1522,67 @@ def resource_rename(rid: int, payload: RenameIn):
 
 
 
+@app.post("/api/resources/{rid}/files/upload")
+async def resource_upload_files(
+    rid: int,
+    target_path: str = Form(""),
+    rel_paths_json: str = Form("[]"),
+    files: list[UploadFile] = File(...),
+):
+    """Importa archivos usando el selector estándar del navegador/Windows.
+
+    No depende del puente pywebview, por lo que funciona tanto en la aplicación
+    instalada como en la interfaz local. Con ``webkitRelativePath`` conserva la
+    estructura al importar una carpeta completa.
+    """
+    if not files:
+        raise HTTPException(400, "Selecciona al menos un archivo")
+    _, root, target_dir = safe_resource_path(rid, target_path)
+    if not target_dir.exists() or not target_dir.is_dir():
+        raise HTTPException(404, "La carpeta de destino no existe")
+    try:
+        rel_paths = json.loads(rel_paths_json or "[]")
+        if not isinstance(rel_paths, list):
+            rel_paths = []
+    except Exception:
+        rel_paths = []
+
+    copied: list[str] = []
+    skipped = 0
+    for idx, upload in enumerate(files):
+        fallback = Path(upload.filename or f"archivo_{idx+1}").name
+        raw_rel = rel_paths[idx] if idx < len(rel_paths) else fallback
+        relative = safe_upload_relative_path(raw_rel, fallback)
+        destination = target_dir / relative
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination = unique_destination(destination)
+            with destination.open("wb") as out:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            copied.append(canonical_rel_path(str(destination.relative_to(root))))
+        except Exception:
+            skipped += 1
+        finally:
+            try:
+                await upload.close()
+            except Exception:
+                pass
+
+    count, total = index_resource(rid, root)
+    try:
+        sync_resource_to_selected_collection(rid)
+    except Exception:
+        pass
+    return {
+        "ok": True, "copied": len(copied), "skipped": skipped, "items": copied,
+        "file_count": count, "total_bytes": total, "target_path": canonical_rel_path(target_path),
+    }
+
+
 @app.post("/api/resources/{rid}/files/import")
 def resource_import_files(rid: int, payload: ImportFilesIn):
     if not payload.paths:
@@ -1477,14 +1695,31 @@ def resource_open_subfolder(rid: int, payload: dict):
 
 @app.get("/api/tags")
 def tags_list():
+    """Lista etiquetas con conteos reales y una pequeña vista previa de imágenes."""
     with db() as con:
         rows = [dict(x) for x in con.execute(
             """SELECT t.id,t.name,t.created_at,
                       (SELECT COUNT(*) FROM resource_tags rt WHERE rt.tag_id=t.id) AS resources,
                       (SELECT COUNT(*) FROM folder_tags ft WHERE ft.tag_id=t.id) AS folders,
-                      (SELECT COUNT(*) FROM file_tags fit WHERE fit.tag_id=t.id) AS files
+                      (SELECT COUNT(*) FROM file_tags fit
+                         JOIN files f ON f.resource_id=fit.resource_id AND f.rel_path=fit.rel_path
+                       WHERE fit.tag_id=t.id) AS files
                FROM tags t ORDER BY t.name COLLATE NOCASE"""
         )]
+        image_exts = tuple(sorted(PREVIEW_EXTS))
+        placeholders = ",".join("?" for _ in image_exts)
+        for row in rows:
+            sample_sql = f"""
+                SELECT f.resource_id,f.rel_path,r.name AS resource_name
+                FROM file_tags ft
+                JOIN files f ON f.resource_id=ft.resource_id AND f.rel_path=ft.rel_path
+                JOIN resources r ON r.id=f.resource_id
+                WHERE ft.tag_id=? AND LOWER(f.ext) IN ({placeholders})
+                ORDER BY r.name COLLATE NOCASE,f.rel_path COLLATE NOCASE
+                LIMIT 4
+            """
+            samples = [dict(x) for x in con.execute(sample_sql, (row["id"], *image_exts))]
+            row["samples"] = samples
     return rows
 
 
@@ -1618,6 +1853,36 @@ def file_tags_bulk(rid: int, payload: FileTagBulkIn):
                 for tid in valid_tag_ids:
                     con.execute("DELETE FROM file_tags WHERE resource_id=? AND rel_path=? AND tag_id=?", (rid, rel, tid))
     return {"ok": True, "files": len(valid_paths), "tags": len(tag_ids), "mode": payload.mode}
+
+
+@app.post("/api/resources/{rid}/tags/apply-to-files")
+def tag_apply_to_files(rid: int, payload: TagApplyFilesIn):
+    r = get_resource(rid)
+    if not r:
+        raise HTTPException(404, "Recurso no encontrado")
+    prefix = canonical_rel_path(payload.path)
+    tag_ids = sorted(set(int(x) for x in payload.tag_ids))
+    if payload.mode not in {"add", "remove"}:
+        raise HTTPException(400, "Modo no válido")
+    with db() as con:
+        valid_tag_ids = [tid for tid in tag_ids if con.execute('SELECT id FROM tags WHERE id=?', (tid,)).fetchone()]
+        sql = 'SELECT rel_path,ext FROM files WHERE resource_id=?'
+        rows = [dict(x) for x in con.execute(sql, (rid,))]
+        paths = []
+        for row in rows:
+            rel = canonical_rel_path(row['rel_path'])
+            if prefix and not (rel == prefix or rel.startswith(prefix + '/')):
+                continue
+            if payload.images_only and str(row.get('ext') or '').lower() not in PREVIEW_EXTS:
+                continue
+            paths.append(rel)
+        for rel in paths:
+            for tid in valid_tag_ids:
+                if payload.mode == 'add':
+                    con.execute('INSERT OR IGNORE INTO file_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)', (rid,rel,tid))
+                else:
+                    con.execute('DELETE FROM file_tags WHERE resource_id=? AND rel_path=? AND tag_id=?', (rid,rel,tid))
+    return {"ok": True, "files": len(paths), "tags": len(valid_tag_ids), "mode": payload.mode}
 
 
 @app.post("/api/resources/{rid}/files/export")

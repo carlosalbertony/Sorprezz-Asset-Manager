@@ -42,6 +42,9 @@ class DesktopBridge:
     def __init__(self) -> None:
         self.window = None
 
+    def is_ready(self):
+        return self.window is not None
+
     def choose_folder(self):
         if self.window is None:
             return None

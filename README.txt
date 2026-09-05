@@ -1,78 +1,89 @@
-SORPREZZ ASSET MANAGER V1.7.0
-================================
+SORPREZZ ASSET MANAGER V1.8.0
+=============================
 
 OBJETIVO
 --------
-Sorprezz Asset Manager organiza bibliotecas grandes de imágenes, carpetas y recursos. La V1.7 permite incorporar material tanto desde Google Drive como manualmente, sin duplicar herramientas.
+Sorprezz Asset Manager organiza bibliotecas grandes de imágenes y carpetas. El programa no es un catálogo comercial: su función es incorporar material, clasificarlo, visualizarlo, etiquetarlo, agruparlo en colecciones y mantener sincronizados los archivos físicos con la aplicación.
 
-ARQUITECTURA FINAL
-------------------
-1. Inicio
-   Resumen y actividad reciente.
+ARQUITECTURA DE USO
+-------------------
+Inicio -> Agregar material -> Biblioteca -> Colecciones -> Organización -> Configuración
 
-2. Agregar material
-   Una sola entrada para incorporar contenido a Biblioteca.
-   FUENTES:
-   - Google Drive: una carpeta o varias por lote.
-   - Manual: crea una carpeta/recurso vacío directamente en Biblioteca.
-   En ambos casos puedes definir nombre, categoría, subcategoría, etiquetas y colección opcional.
+1. AGREGAR MATERIAL
+- Google Drive: una carpeta o varias carpetas por lote.
+- Manual: crea un recurso físico vacío dentro de Biblioteca.
+- Selección o creación rápida de categoría y subcategoría.
+- Selección o creación de etiquetas.
+- Colección opcional.
+- Sugerencias de nombres existentes.
+- Opción para mantener la misma clasificación en cargas consecutivas.
 
-3. Biblioteca
-   Centro principal de administración de archivos.
-   - Recursos descargados y manuales.
-   - Fuente visible: Google Drive o Manual.
-   - Navegación por carpetas.
-   - Galería y lista.
-   - Crear carpetas.
-   - Importar archivos desde la computadora a la carpeta actual.
-   - Abrir la ubicación física en Windows.
-   - Renombrar, copiar, mover, eliminar, etiquetar y comprimir.
-   - Editar nombre, categoría, subcategoría y etiquetas de un recurso.
-   - Buscar recursos e imágenes.
-   - Sincronizar cambios hechos manualmente en Windows.
+2. BIBLIOTECA
+- Recursos descargados y recursos manuales en un mismo lugar.
+- Navegación visual por carpetas y subcarpetas.
+- Galería y lista.
+- Búsqueda global por nombre, carpeta, recurso, categoría y etiqueta.
+- Crear carpetas.
+- Renombrar archivos y carpetas.
+- Copiar y mover selecciones.
+- Eliminar elementos físicos con confirmación.
+- Abrir archivos o carpetas directamente en Windows.
+- ZIP de recursos y selecciones.
+- Importar archivos desde la computadora a cualquier carpeta.
+- Importar una carpeta completa conservando su estructura interna.
 
-4. Colecciones
-   Reúne copias de imágenes de diferentes partes de Biblioteca sin alterar los originales.
-   - Crear colección vacía.
-   - Crear desde selección.
-   - Crear desde etiqueta.
-   - Agregar material después.
-   - Abrir carpeta física y exportar ZIP.
+3. IMPORTACIÓN LOCAL V1.8
+- El botón Importar archivos usa el selector estándar de Windows/navegador embebido.
+- Ya no depende de que pywebview exponga choose_files en el momento exacto.
+- Se admite selección múltiple.
+- La carga se envía por localhost mediante multipart y se copia en la carpeta actual.
+- El botón Importar carpeta permite seleccionar una carpeta local completa y conservar subcarpetas.
+- Después de importar, Sorprezz reindexa automáticamente el recurso y las nuevas imágenes aparecen en la galería.
 
-5. Organización
-   Solo contiene herramientas que aportan al flujo:
-   - Categorías y subcategorías.
-   - Etiquetas.
-   Se elimina Plantillas porque no era necesaria para el uso real.
+4. ETIQUETAS
+- Etiquetas en recursos, carpetas e imágenes individuales.
+- Etiquetado masivo de imágenes seleccionadas.
+- Al etiquetar un recurso o carpeta puede aplicarse la misma etiqueta a todas sus imágenes.
+- Organización > Etiquetas muestra conteos reales y hasta cuatro miniaturas de ejemplo.
+- Ver imágenes abre Biblioteca filtrada por la etiqueta.
+- Las rutas se normalizan para Windows y la sincronización conserva asociaciones de etiquetas.
+- Antes de una sincronización global se crea una copia de seguridad de la base de datos.
 
-6. Configuración
-   Ubicación principal de Biblioteca y utilidades técnicas.
+5. SINCRONIZACIÓN
+- Botón Sincronizar visible permanentemente.
+- Sincronizar recurso para cambios en una sola carpeta.
+- Sincronizar todo para cambios hechos directamente en Windows.
+- Reindexa archivos, cantidades y tamaños sin borrar etiquetas.
+- La respuesta de sincronización verifica los vínculos de etiquetas antes y después.
 
-SINCRONIZACIÓN
----------------
-La opción “Sincronizar todo” está siempre visible en la barra lateral y también en el encabezado.
-Si agregas, borras, mueves o renombras archivos directamente desde Windows, la sincronización vuelve a indexar todos los recursos locales.
-También puedes sincronizar un recurso individual desde Biblioteca.
+6. COLECCIONES
+- Reúnen copias de imágenes de distintos recursos sin modificar originales.
+- Crear desde una selección o desde una etiqueta.
+- Agregar nuevas imágenes a una colección existente.
+- Carpeta física independiente dentro de Colecciones_Web.
+- Exportación ZIP.
 
-IMPORTACIÓN LOCAL
+7. ORGANIZACIÓN
+- Categorías y subcategorías.
+- Etiquetas.
+- No existen Plantillas ni Catálogo en la interfaz de V1.8.
+
+DATOS DEL USUARIO
 -----------------
-Dentro de cualquier carpeta de Biblioteca puedes usar “Importar archivos”.
-Se abre el selector nativo de Windows, eliges uno o varios archivos y Sorprezz los copia a la carpeta actual, los indexa y actualiza conteos.
+Base de datos:
+%LOCALAPPDATA%\SorprezzAssetManager\data\sorprezz.db
 
-CLASIFICACIÓN MANUAL
---------------------
-Los recursos pueden crearse sin enlace. Se guardan con Fuente: Manual.
-Posteriormente se puede editar nombre, categoría, subcategoría y etiquetas. Si cambia la clasificación, Sorprezz mueve la carpeta física a la ubicación correspondiente dentro de Biblioteca.
+Biblioteca:
+la carpeta definida por el usuario, normalmente Documentos\SorprezzLibrary.
 
-COMPATIBILIDAD
---------------
-La V1.7 puede instalarse encima de V1.6 y versiones anteriores.
-No desinstales antes de actualizar.
-La base de datos está en:
-%LOCALAPPDATA%\SorprezzAssetManager\data
+Las actualizaciones de la aplicación no deben borrar la Biblioteca ni la base de datos.
 
-Las tablas antiguas de funciones retiradas pueden conservarse internamente para evitar pérdida de datos durante la migración, pero ya no aparecen en la interfaz.
+ACTUALIZACIÓN
+-------------
+V1.8.0 puede instalarse encima de V1.7.x o versiones anteriores. No desinstalar primero.
 
-GOOGLE DRIVE
-------------
-El motor actual sigue utilizando enlaces compartidos mediante gdown. La V1.7 mejora la incorporación, organización manual, importación local y sincronización, pero todavía no integra OAuth oficial de Google Drive.
+Para compilar mediante GitHub Actions, subir a la raíz del repositorio los archivos actualizados, incluyendo desktop.py y requirements.txt. El workflow actual puede mantenerse.
+
+NOTA GOOGLE DRIVE
+-----------------
+El motor de Google Drive sigue basado en enlaces compartidos/gdown. La gestión local, importación manual, etiquetas, colecciones y sincronización son independientes de esa limitación. Una integración OAuth oficial de Google Drive sería una mejora futura para verificar descargas remotas de forma exhaustiva.
