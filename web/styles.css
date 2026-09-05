@@ -70,3 +70,22 @@
   .two-col{grid-template-columns:1fr}
   .quick-tools{align-items:flex-start;flex-direction:column}
 }
+
+/* V1.7 - flujo simplificado */
+.sidebar{display:flex;flex-direction:column}
+.sidebar nav{flex:1}
+.sidebar-bottom{margin-top:auto;padding:16px 14px 14px;display:grid;gap:10px}
+.sidebar-sync{width:100%;border:1px solid #3b3448;background:#241f2d;color:#f4efff;border-radius:12px;padding:11px 12px;text-align:left;font-weight:700;cursor:pointer}
+.sidebar-sync:hover{background:#30283c}
+.sidebar-bottom .version{position:static;padding:0;margin:0}
+.header-actions{display:flex;align-items:center;gap:12px}
+.compact-sync{padding:9px 12px}
+.source-label{display:inline-flex;align-items:center;gap:6px;margin:4px 0 14px;padding:7px 10px;background:#f5f1fb;border-radius:9px;color:#574a68}
+.secondary-segmented{margin-bottom:16px;width:max-content}
+.source-badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:700;vertical-align:middle}
+.source-drive{background:#e9f3ff;color:#2263a7}
+.source-manual{background:#ecf9ef;color:#23794a}
+.manual-sync-note{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin:8px 0 14px;border:1px solid #e4dfeb;background:#faf8fc;border-radius:10px;color:#675d73;font-size:13px}
+.explorer-buttons{flex-wrap:wrap}
+.selection-bar .danger{background:#fff0f0;color:#a92d2d;border:1px solid #f0c7c7}
+@media (max-width:1100px){.header-actions .compact-sync{display:none}.manual-sync-note{align-items:flex-start;flex-direction:column}}

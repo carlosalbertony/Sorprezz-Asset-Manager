@@ -15,13 +15,16 @@
     </div>
     <nav>
       <button class="nav active" data-page="dashboard">⌂ <span>Inicio</span></button>
-      <button class="nav" data-page="downloads">↓ <span>Descargas</span></button>
+      <button class="nav" data-page="downloads">＋ <span>Agregar material</span></button>
       <button class="nav" data-page="library">▦ <span>Biblioteca</span></button>
       <button class="nav" data-page="collections">▣ <span>Colecciones</span></button>
       <button class="nav" data-page="organization">⌘ <span>Organización</span></button>
       <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
     </nav>
-    <div class="version">Versión 1.6.0</div>
+    <div class="sidebar-bottom">
+      <button class="sidebar-sync" onclick="syncAllResources()">↻ <span>Sincronizar todo</span></button>
+      <div class="version">Versión 1.7.0</div>
+    </div>
   </aside>
 
   <main>
@@ -30,7 +33,10 @@
         <h1 id="pageTitle">Inicio</h1>
         <p id="pageSubtitle">Organiza tus imágenes y recursos desde un solo lugar.</p>
       </div>
-      <div id="serverDot" class="server-dot" title="Aplicación local activa"></div>
+      <div class="header-actions">
+        <button class="secondary compact-sync" onclick="syncAllResources()">↻ Sincronizar</button>
+        <div id="serverDot" class="server-dot" title="Aplicación local activa"></div>
+      </div>
     </header>
 
     <section id="page-dashboard" class="page active">
@@ -38,19 +44,17 @@
       <div class="panel quick-tools">
         <div>
           <h2>Accesos rápidos</h2>
-          <p class="muted">Descarga, revisa, clasifica y agrupa imágenes sin duplicar herramientas.</p>
+          <p class="muted">Agrega, revisa, clasifica y agrupa imágenes desde un solo flujo.</p>
         </div>
         <div class="quick-actions">
           <button class="secondary" onclick="syncAllResources()">↻ Sincronizar biblioteca</button>
           <button class="secondary" onclick="go('library')">Abrir biblioteca</button>
           <button class="secondary" onclick="go('collections')">Ver colecciones</button>
-          <button class="primary" onclick="go('downloads')">+ Nueva descarga</button>
+          <button class="primary" onclick="go('downloads')">+ Agregar material</button>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-head">
-          <div><h2>Actividad reciente</h2><p>Últimos recursos agregados.</p></div>
-        </div>
+        <div class="panel-head"><div><h2>Actividad reciente</h2><p>Últimos recursos agregados a la biblioteca.</p></div></div>
         <div id="recentResources"></div>
       </div>
     </section>
@@ -60,37 +64,51 @@
         <div class="panel-head">
           <div>
             <h2>Agregar material</h2>
-            <p>Registra y clasifica el material en el mismo momento de la descarga.</p>
+            <p>Elige la fuente y clasifica el material antes de incorporarlo a Biblioteca.</p>
           </div>
           <div class="segmented">
+            <button id="sourceDriveBtn" class="active" onclick="setSourceMode('drive')">Google Drive</button>
+            <button id="sourceManualBtn" onclick="setSourceMode('manual')">Manual</button>
+          </div>
+        </div>
+
+        <div id="driveSourcePanel">
+          <div class="source-label">Fuente: <b>Google Drive</b></div>
+          <div class="segmented secondary-segmented">
             <button id="downloadModeSingleBtn" class="active" onclick="setDownloadMode('single')">Una carpeta</button>
             <button id="downloadModeBatchBtn" onclick="setDownloadMode('batch')">Varias carpetas</button>
           </div>
+
+          <div id="downloadSingleSource">
+            <label>Enlace de Google Drive
+              <div class="row">
+                <input id="rUrl" placeholder="https://drive.google.com/drive/folders/..." />
+                <button class="secondary" onclick="analyzeLink()">Analizar</button>
+              </div>
+            </label>
+            <div id="analyzeBox" class="notice hidden"></div>
+            <label>Nombre del recurso
+              <input id="rName" list="resourceNameSuggestions" placeholder="Escribe un nombre nuevo o elige una sugerencia..." />
+              <datalist id="resourceNameSuggestions"></datalist>
+            </label>
+          </div>
+
+          <div id="downloadBatchSource" class="hidden">
+            <label>Enlaces por lote
+              <textarea id="batchLinks" rows="8" placeholder="Una línea por carpeta:\n76 diseños cultura pop | https://drive.google.com/drive/folders/...\nDía de la mujer | https://drive.google.com/drive/folders/...\n\nTambién puedes pegar solo URLs."></textarea>
+            </label>
+            <p class="muted">Formato recomendado: <b>Nombre | URL</b>. Todo el lote usará la clasificación elegida abajo.</p>
+          </div>
         </div>
 
-        <div id="downloadSingleSource">
-          <label>Enlace de Google Drive
-            <div class="row">
-              <input id="rUrl" placeholder="https://drive.google.com/drive/folders/..." />
-              <button class="secondary" onclick="analyzeLink()">Analizar</button>
-            </div>
+        <div id="manualSourcePanel" class="hidden">
+          <div class="source-label">Fuente: <b>Manual</b></div>
+          <div class="notice neutral-note">
+            Crea una carpeta nueva dentro de Biblioteca aunque no exista un enlace de descarga. Después podrás abrirla, crear subcarpetas e importar archivos desde tu computadora.
+          </div>
+          <label>Nombre del material
+            <input id="manualName" list="resourceNameSuggestions" placeholder="Ej. Nueva colección de camisetas" />
           </label>
-          <div id="analyzeBox" class="notice hidden"></div>
-          <label>Nombre del recurso
-            <input id="rName" list="resourceNameSuggestions" placeholder="Escribe un nombre nuevo o elige una sugerencia..." />
-            <datalist id="resourceNameSuggestions"></datalist>
-          </label>
-        </div>
-
-        <div id="downloadBatchSource" class="hidden">
-          <label>Enlaces por lote
-            <textarea id="batchLinks" rows="9" placeholder="Una línea por carpeta:
-76 diseños cultura pop | https://drive.google.com/drive/folders/...
-Día de la mujer | https://drive.google.com/drive/folders/...
-
-También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podrás cambiar después."></textarea>
-          </label>
-          <p class="muted">Formato recomendado: <b>Nombre | URL</b>. Todos los enlaces del lote usarán la clasificación elegida abajo.</p>
         </div>
 
         <div class="download-classification">
@@ -120,30 +138,34 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
                 <select id="downloadCollection"><option value="">No agregar a colección</option></select>
                 <button type="button" class="secondary compact-btn" onclick="quickDownloadCollection()">+ Nueva</button>
               </div>
-              <span class="muted field-help">Si eliges una colección, las imágenes descargadas se copiarán allí sin mover los originales.</span>
+              <span class="muted field-help">Solo agrupa copias; los originales permanecen en Biblioteca.</span>
             </label>
           </div>
         </div>
 
-        <div class="download-options">
+        <div id="driveOptions" class="download-options">
           <label><input id="avoidDuplicates" type="checkbox" checked> Evitar enlaces duplicados</label>
-          <label><input id="keepClassification" type="checkbox" checked> Mantener categoría, subcategoría y etiquetas para la siguiente descarga</label>
+          <label><input id="keepClassification" type="checkbox" checked> Mantener clasificación para el siguiente material</label>
         </div>
 
-        <div class="notice neutral-note">
-          <strong>Automático:</strong> Sorprezz conserva la estructura original de carpetas e indexa el contenido al terminar. Estas acciones son necesarias para que Biblioteca funcione correctamente y por eso no se muestran como opciones separadas.
+        <div id="driveAutomaticNote" class="notice neutral-note">
+          <strong>Automático:</strong> al terminar, Sorprezz conserva la estructura original e indexa los archivos para que aparezcan en Biblioteca.
         </div>
 
-        <div class="actions">
+        <div id="driveActions" class="actions">
           <button class="secondary" onclick="resetDownloadForm(false)">Limpiar</button>
           <button class="secondary" onclick="saveAndDownload(true)">Descargar y agregar otro</button>
           <button class="primary" onclick="saveAndDownload(false)">Descargar</button>
         </div>
+        <div id="manualActions" class="actions hidden">
+          <button class="secondary" onclick="resetManualForm()">Limpiar</button>
+          <button class="primary" onclick="createManualMaterial()">Crear en Biblioteca</button>
+        </div>
       </div>
 
       <div class="panel tip">
-        <strong>Flujo optimizado</strong>
-        <p>Descargas clasifica el recurso. Biblioteca administra archivos. Colecciones agrupa selecciones. Organización mantiene categorías, etiquetas y plantillas.</p>
+        <strong>Sin funciones duplicadas</strong>
+        <p><b>Agregar material</b> incorpora y clasifica. <b>Biblioteca</b> administra archivos. <b>Colecciones</b> agrupa selecciones. <b>Organización</b> mantiene categorías y etiquetas.</p>
       </div>
     </section>
 
@@ -154,18 +176,21 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
             <button id="libraryResourcesBtn" class="active" onclick="setLibraryMode('resources')">Recursos</button>
             <button id="libraryImagesBtn" onclick="setLibraryMode('images')">Buscar imágenes</button>
           </div>
-          <button class="secondary" onclick="syncAllResources()">↻ Sincronizar biblioteca</button>
+          <div class="quick-actions">
+            <button class="secondary" onclick="go('downloads');setSourceMode('manual')">+ Crear material manual</button>
+            <button class="primary" onclick="syncAllResources()">↻ Sincronizar todo</button>
+          </div>
         </div>
 
         <div id="libraryResourcesView">
           <div class="toolbar">
-            <input id="searchQ" placeholder="Buscar recurso, categoría, subcategoría, etiqueta o enlace..." oninput="loadLibrary()" />
+            <input id="searchQ" placeholder="Buscar recurso, categoría, subcategoría, etiqueta o fuente..." oninput="loadLibrary()" />
             <select id="filterCategory" onchange="loadLibrary()"><option value="">Todas las categorías</option></select>
             <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="error">Con error</option></select>
             <select id="filterTag" onchange="loadLibrary()"><option value="">Todas las etiquetas</option></select>
             <button class="secondary" onclick="clearLibraryFilters()">Limpiar filtros</button>
           </div>
-          <div class="notice library-note neutral-note"><strong>Biblioteca:</strong> aquí ves los recursos originales. Ábrelos para navegar carpetas, ver miniaturas, etiquetar, copiar, mover, descargar o crear colecciones.</div>
+          <div class="notice library-note neutral-note"><strong>Biblioteca:</strong> contiene tanto material descargado como creado manualmente. Ábrelo para ver carpetas, importar archivos, etiquetar, mover, copiar, borrar o crear colecciones.</div>
           <div class="panel"><div id="libraryList"></div></div>
         </div>
 
@@ -184,9 +209,7 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
             <button class="secondary" onclick="exportGlobalSelected()">↓ Descargar copia…</button>
             <button class="secondary" onclick="clearGlobalSelection()">Limpiar selección</button>
           </div>
-          <div class="panel">
-            <div id="globalAssetsGrid" class="asset-grid global-assets-grid"></div>
-          </div>
+          <div class="panel"><div id="globalAssetsGrid" class="asset-grid global-assets-grid"></div></div>
         </div>
       </div>
 
@@ -194,16 +217,16 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
         <div class="panel explorer-top">
           <div class="back-and-resource">
             <button class="secondary" onclick="closeLibraryExplorer()">← Volver a Biblioteca</button>
-            <label>Recurso
-              <select id="explorerResource" onchange="selectExplorerResource()"></select>
-            </label>
+            <label>Recurso<select id="explorerResource" onchange="selectExplorerResource()"></select></label>
           </div>
           <div class="explorer-buttons">
+            <button class="primary" onclick="explorerImportFiles()">+ Importar archivos</button>
             <button class="secondary" onclick="explorerNewFolder()">+ Nueva carpeta</button>
+            <button class="secondary" onclick="openResourceMetadataEditor()">Editar clasificación</button>
             <button class="secondary" onclick="openResourceTagEditor()">🏷 Etiquetar recurso</button>
             <button class="secondary" onclick="openCurrentFolderTagEditor()">🏷 Etiquetar carpeta</button>
             <button class="secondary" onclick="explorerOpenCurrent()">Abrir en Windows</button>
-            <button class="secondary" onclick="explorerRescan()">Reindexar</button>
+            <button class="secondary" onclick="explorerRescan()">↻ Sincronizar recurso</button>
           </div>
         </div>
         <div id="explorerEmpty" class="panel empty">Selecciona un recurso para ver su contenido.</div>
@@ -216,10 +239,7 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
           <div class="panel explorer-main">
             <div class="explorer-header">
               <div><div id="explorerBreadcrumb" class="breadcrumb"></div><p id="explorerSummary" class="muted"></p></div>
-              <div class="view-switch">
-                <button class="secondary" onclick="setExplorerView('grid')">▦ Galería</button>
-                <button class="secondary" onclick="setExplorerView('list')">☷ Lista</button>
-              </div>
+              <div class="view-switch"><button class="secondary" onclick="setExplorerView('grid')">▦ Galería</button><button class="secondary" onclick="setExplorerView('list')">☷ Lista</button></div>
             </div>
             <div id="selectionBar" class="selection-bar hidden">
               <span id="selectionCount">0 seleccionados</span>
@@ -230,13 +250,10 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
               <button class="secondary" onclick="organizeSelected('copy')">Copiar a…</button>
               <button class="secondary" onclick="organizeSelected('move')">Mover a…</button>
               <button class="secondary" onclick="zipSelected()">ZIP selección</button>
+              <button class="danger" onclick="deleteExplorerSelected()">Eliminar</button>
               <button class="secondary" onclick="clearExplorerSelection()">Limpiar</button>
             </div>
-            <div class="template-apply-bar">
-              <select id="explorerTemplate"><option value="">Plantilla de carpetas…</option></select>
-              <button class="secondary" onclick="applyFolderTemplate()">Crear carpetas desde plantilla</button>
-              <span class="muted">Crea carpetas en la ubicación actual sin modificar los archivos existentes.</span>
-            </div>
+            <div class="manual-sync-note"><span>Los cambios hechos aquí o directamente en Windows se reflejan al sincronizar.</span><button class="secondary" onclick="explorerRescan()">↻ Actualizar ahora</button></div>
             <div id="explorerItems" class="asset-grid"></div>
           </div>
         </div>
@@ -245,83 +262,27 @@ También puedes pegar solo URLs; Sorprezz asignará un nombre temporal que podr�
 
     <section id="page-collections" class="page">
       <div class="panel collection-intro">
-        <div>
-          <h2>Colecciones</h2>
-          <p class="muted">Agrupa copias de imágenes provenientes de cualquier parte de Biblioteca. Los originales permanecen intactos.</p>
-        </div>
-        <div class="quick-actions">
-          <button class="secondary" onclick="openCollectionCreateEmpty()">+ Nueva colección vacía</button>
-          <button class="primary" onclick="openCollectionFromTag()">Crear desde etiqueta</button>
-        </div>
+        <div><h2>Colecciones</h2><p class="muted">Agrupa copias de imágenes provenientes de cualquier parte de Biblioteca. Los originales permanecen intactos.</p></div>
+        <div class="quick-actions"><button class="secondary" onclick="openCollectionCreateEmpty()">+ Nueva colección vacía</button><button class="primary" onclick="openCollectionFromTag()">Crear desde etiqueta</button></div>
       </div>
-      <div class="toolbar collection-toolbar">
-        <input id="collectionSearch" placeholder="Buscar colección por nombre, categoría o descripción..." oninput="loadCollections()">
-        <button class="secondary" onclick="clearCollectionSearch()">Limpiar</button>
-      </div>
-      <div class="panel">
-        <div id="collectionsGrid" class="collection-grid"></div>
-      </div>
+      <div class="toolbar collection-toolbar"><input id="collectionSearch" placeholder="Buscar colección por nombre, categoría o descripción..." oninput="loadCollections()"><button class="secondary" onclick="clearCollectionSearch()">Limpiar</button></div>
+      <div class="panel"><div id="collectionsGrid" class="collection-grid"></div></div>
     </section>
 
     <section id="page-organization" class="page">
       <div class="organization-tabs segmented">
         <button id="orgCategoriesBtn" class="active" onclick="setOrganizationTab('categories')">Categorías</button>
         <button id="orgTagsBtn" onclick="setOrganizationTab('tags')">Etiquetas</button>
-        <button id="orgTemplatesBtn" onclick="setOrganizationTab('templates')">Plantillas</button>
       </div>
-
       <div id="orgCategories">
         <div class="two-col">
-          <div class="panel">
-            <h2>Nueva categoría</h2>
-            <div class="row"><input id="newCategoryName" placeholder="Nombre de categoría" /><button class="primary" onclick="createCategory()">Crear</button></div>
-          </div>
-          <div class="panel">
-            <h2>Nueva subcategoría</h2>
-            <select id="subCatParent"></select>
-            <div class="row"><input id="newSubcategoryName" placeholder="Ej. Disney" /><button class="primary" onclick="createSubcategory()">Crear</button></div>
-          </div>
+          <div class="panel"><h2>Nueva categoría</h2><div class="row"><input id="newCategoryName" placeholder="Nombre de categoría" /><button class="primary" onclick="createCategory()">Crear</button></div></div>
+          <div class="panel"><h2>Nueva subcategoría</h2><select id="subCatParent"></select><div class="row"><input id="newSubcategoryName" placeholder="Ej. Disney" /><button class="primary" onclick="createSubcategory()">Crear</button></div></div>
         </div>
         <div class="panel"><h2>Estructura actual</h2><div id="categoryTree" class="category-tree"></div></div>
       </div>
-
       <div id="orgTags" class="hidden">
-        <div class="panel">
-          <h2>Etiquetas</h2>
-          <p class="muted">Clasifican recursos, carpetas e imágenes sin moverlas. Úsalas para búsquedas y para crear colecciones.</p>
-          <div class="row"><input id="newTagName" placeholder="Nombre de la etiqueta"><button class="primary" onclick="createTag()">Crear etiqueta</button></div>
-          <div id="tagsManager" class="tag-manager"></div>
-        </div>
-      </div>
-
-      <div id="orgTemplates" class="hidden">
-        <div class="two-col utility-top">
-          <div class="panel">
-            <h2>Nueva plantilla de carpetas</h2>
-            <p class="muted">Una carpeta por línea. Puedes crear rutas anidadas como <b>MOCKUPS/Camiseta blanca</b>.</p>
-            <label>Nombre<input id="templateName" placeholder="Ej. Estructura Camisetas"></label>
-            <label>Descripción<input id="templateDescription" placeholder="Opcional"></label>
-            <label>Carpetas<textarea id="templateFolders" rows="10" placeholder="ORIGINALES
-PNG
-VECTORES
-MOCKUPS
-SELECCIONADOS
-COLECCIONES"></textarea></label>
-            <div class="actions"><button class="primary" onclick="createFolderTemplate()">Guardar plantilla</button></div>
-          </div>
-          <div class="panel">
-            <h2>Aplicar plantilla</h2>
-            <p class="muted">Crea carpetas físicas dentro de un recurso sin alterar los archivos existentes.</p>
-            <label>Recurso<select id="utilityResource"><option value="">Selecciona un recurso...</option></select></label>
-            <label>Plantilla<select id="utilityTemplate"><option value="">Selecciona una plantilla...</option></select></label>
-            <label>Ruta interna opcional<input id="utilityParentPath" placeholder="Ej. SELECCIONADOS o vacío para raíz"></label>
-            <div class="actions"><button class="primary" onclick="applyTemplateFromUtilities()">Crear carpetas desde plantilla</button></div>
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><div><h2>Plantillas guardadas</h2><p>Edítalas, elimínalas o aplícalas desde Biblioteca.</p></div></div>
-          <div id="folderTemplates" class="template-grid"></div>
-        </div>
+        <div class="panel"><h2>Etiquetas</h2><p class="muted">Clasifican recursos, carpetas e imágenes sin moverlas. Sirven para buscar y reunir material en colecciones.</p><div class="row"><input id="newTagName" placeholder="Nombre de la etiqueta"><button class="primary" onclick="createTag()">Crear etiqueta</button></div><div id="tagsManager" class="tag-manager"></div></div>
       </div>
     </section>
 
@@ -329,23 +290,21 @@ COLECCIONES"></textarea></label>
       <div class="panel form-panel">
         <h2>Almacenamiento</h2>
         <p class="muted">Aquí se guardarán Biblioteca, Colecciones, Exportaciones y archivos temporales.</p>
-        <label>Carpeta principal
-          <div class="storage-picker"><input id="libraryPath" /><button type="button" class="secondary" onclick="chooseLibraryFolder()">Elegir carpeta…</button></div>
-        </label>
-        <div class="actions"><button class="primary" onclick="saveSettings()">Guardar ubicación</button></div>
+        <label>Carpeta principal<div class="storage-picker"><input id="libraryPath" /><button type="button" class="secondary" onclick="chooseLibraryFolder()">Elegir carpeta…</button></div></label>
+        <div class="actions"><button class="primary" onclick="saveSettings()">Guardar ubicación</button><button class="secondary" onclick="syncAllResources()">↻ Sincronizar todo</button></div>
         <div id="configMeta" class="config-meta"></div>
       </div>
       <div class="panel">
         <h2>Funciones principales</h2>
         <div class="feature-grid">
-          <div>↓ <b>Descargas clasificadas</b><span>Categoría, subcategoría, etiquetas y colección opcional.</span></div>
+          <div>＋ <b>Agregar material</b><span>Desde Google Drive o creando una carpeta manual.</span></div>
           <div>🖼️ <b>Biblioteca visual</b><span>Busca y visualiza PNG, JPG, WEBP, GIF, BMP y SVG.</span></div>
-          <div>📁 <b>Gestión de carpetas</b><span>Crea, renombra, copia, mueve y reindexa.</span></div>
-          <div>🏷 <b>Etiquetas</b><span>Clasifica sin alterar la ubicación original.</span></div>
+          <div>📁 <b>Gestión de carpetas</b><span>Crea, renombra, abre en Windows, copia, mueve y elimina.</span></div>
+          <div>⬆ <b>Importación local</b><span>Copia archivos de tu computadora a cualquier carpeta de Biblioteca.</span></div>
+          <div>🏷 <b>Etiquetas y categorías</b><span>Clasifica recursos, carpetas e imágenes.</span></div>
           <div>▣ <b>Colecciones</b><span>Agrupa copias de imágenes de distintos recursos.</span></div>
-          <div>🗂️ <b>Plantillas</b><span>Crea estructuras de carpetas reutilizables.</span></div>
           <div>↓ <b>Exportación</b><span>Descarga copias y ZIP de selecciones.</span></div>
-          <div>↻ <b>Sincronización</b><span>Detecta cambios realizados manualmente en Windows.</span></div>
+          <div>↻ <b>Sincronización</b><span>Actualiza cambios realizados dentro o fuera de la aplicación.</span></div>
         </div>
       </div>
     </section>

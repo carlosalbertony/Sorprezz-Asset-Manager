@@ -1,6 +1,5 @@
 let CATEGORIES=[];
 let TAGS=[];
-let FOLDER_TEMPLATES=[];
 let EXPLORER={rid:null,path:'',items:[],selected:new Set(),view:'grid',resource:null};
 let GLOBAL_ASSETS=[];
 let GLOBAL_SELECTED=new Map();
@@ -8,13 +7,14 @@ let COLLECTIONS=[];
 let PENDING_COLLECTION_REFS=[];
 let DOWNLOAD_TAG_IDS=new Set();
 let DOWNLOAD_MODE='single';
+let SOURCE_MODE='drive';
 let LIBRARY_MODE='resources';
 const pages={
   dashboard:['Inicio','Organiza tus imágenes y recursos desde un solo lugar.'],
-  downloads:['Descargas','Pega enlaces, clasifícalos y descárgalos.'],
+  downloads:['Agregar material','Incorpora material desde Google Drive o crea una carpeta manual.'],
   library:['Biblioteca','Busca, visualiza y administra todos los recursos e imágenes.'],
   collections:['Colecciones','Agrupa imágenes de distintos recursos sin modificar los originales.'],
-  organization:['Organización','Administra categorías, etiquetas y plantillas de carpetas.'],
+  organization:['Organización','Administra categorías, subcategorías y etiquetas.'],
   settings:['Configuración','Almacenamiento y utilidades de la aplicación.']
 };
 
@@ -22,7 +22,6 @@ async function api(path,opts={}){const r=await fetch(path,{headers:{'Content-Typ
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),3500)}
 function fmtBytes(n){n=Number(n||0);if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];let i=Math.min(u.length-1,Math.floor(Math.log(n)/Math.log(1024)));return (n/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i]}
 function statusLabel(s){return {pendiente:'Pendiente',descargando:'Descargando',completado:'Completado',parcial:'Completado',error:'Con error'}[s]||s}
-function catalogStatusLabel(s){return {seleccionado:'Seleccionado',preparacion:'En preparación',listo:'Listo para catálogo',publicado:'Publicado'}[s]||s}
 function go(p){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x.dataset.page===p));
@@ -34,7 +33,7 @@ function go(p){
   if(p==='downloads')loadDownloadsSetup();
   if(p==='library'){closeLibraryExplorer(true);setLibraryMode(LIBRARY_MODE||'resources');}
   if(p==='collections')loadCollectionsPage();
-  if(p==='organization'){loadCategories();loadUtilities();}
+  if(p==='organization'){loadCategories();ensureTags().then(renderTagsManager);}
   if(p==='settings')loadSettings();
 }
 document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>go(b.dataset.page));
@@ -131,6 +130,18 @@ async function loadDownloadsSetup(){
   }catch(e){console.warn(e)}
   renderDownloadTagChips();
 }
+function setSourceMode(mode){
+  SOURCE_MODE=mode==='manual'?'manual':'drive';
+  document.getElementById('sourceDriveBtn')?.classList.toggle('active',SOURCE_MODE==='drive');
+  document.getElementById('sourceManualBtn')?.classList.toggle('active',SOURCE_MODE==='manual');
+  document.getElementById('driveSourcePanel')?.classList.toggle('hidden',SOURCE_MODE!=='drive');
+  document.getElementById('manualSourcePanel')?.classList.toggle('hidden',SOURCE_MODE!=='manual');
+  document.getElementById('driveOptions')?.classList.toggle('hidden',SOURCE_MODE!=='drive');
+  document.getElementById('driveAutomaticNote')?.classList.toggle('hidden',SOURCE_MODE!=='drive');
+  document.getElementById('driveActions')?.classList.toggle('hidden',SOURCE_MODE!=='drive');
+  document.getElementById('manualActions')?.classList.toggle('hidden',SOURCE_MODE!=='manual');
+}
+
 function setDownloadMode(mode){
   DOWNLOAD_MODE=mode==='batch'?'batch':'single';
   document.getElementById('downloadSingleSource')?.classList.toggle('hidden',DOWNLOAD_MODE!=='single');
@@ -214,6 +225,25 @@ async function saveAndDownload(addAnother=false){
   }catch(e){toast(e.message)}
 }
 
+function resetManualForm(){
+  const n=document.getElementById('manualName');if(n)n.value='';
+  DOWNLOAD_TAG_IDS.clear();renderDownloadTagChips();
+  const col=document.getElementById('downloadCollection');if(col)col.value='';
+}
+async function createManualMaterial(){
+  const name=(document.getElementById('manualName')?.value||'').trim();
+  const category_id=Number(document.getElementById('rCategory')?.value||0);
+  if(!name||!category_id)return toast('Completa nombre y categoría');
+  const payload={name,category_id,subcategory_id:document.getElementById('rSubcategory')?.value?Number(document.getElementById('rSubcategory').value):null,tag_ids:selectedDownloadTagIds(),collection_id:document.getElementById('downloadCollection')?.value?Number(document.getElementById('downloadCollection').value):null};
+  try{
+    const r=await api('/api/resources/manual',{method:'POST',body:JSON.stringify(payload)});
+    toast('Material manual creado en Biblioteca');
+    resetManualForm();
+    go('library');
+    setTimeout(()=>openExplorer(r.id),80);
+  }catch(e){toast(e.message)}
+}
+
 async function loadDashboard(){
   const s=await api('/api/stats');
   document.getElementById('stats').innerHTML=[
@@ -274,11 +304,14 @@ async function loadLibrary(){
     toast(e.message);
   }
 }
+function sourceLabel(r){return r.source_type==='manual'?'Manual':'Google Drive'}
 function renderResources(rs,compact=false,filtered=false){
   if(!rs.length)return `<div class="empty">${filtered?'No hay recursos que coincidan con los filtros seleccionados. Usa “Limpiar filtros” para ver toda la biblioteca.':'Todavía no hay recursos registrados.'}</div>`;
   return rs.map(r=>{
+    const isManual=r.source_type==='manual';
     const dlTitle=r.status==='completado'?'Actualizar / volver a descargar':(r.status==='parcial'?'Actualizar descarga':'Descargar');
-    return `<div class="resource"><div><div class="resource-title">${esc(r.name)}</div><div class="resource-sub">${esc(r.category_name||'Sin categoría')} · ${esc(r.subcategory_name||'General')} · ${r.file_count||0} archivos · ${fmtBytes(r.total_bytes)}</div>${r.live?`<div class="progress"><i style="width:${r.live.progress||0}%"></i></div><div class="resource-sub">${esc(r.live.message||'')}</div>`:''}${r.error&&!r.live&&r.status==='error'?`<div class="resource-sub error-summary">Requiere revisión. Abre Detalles para ver qué ocurrió.</div>`:''}${r.tags?.length?`<div class="chips resource-tags">${r.tags.map(t=>`<span class="chip">#${esc(t.name)}</span>`).join('')}</div>`:''}</div><div class="resource-sub">${esc(r.url)}</div><div><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="res-actions">${r.local_path?`<button class="icon-btn" title="Abrir en Biblioteca" onclick="openExplorer(${r.id})">Abrir</button>`:''}<button class="icon-btn" title="Etiquetas" onclick="openResourceTagEditorFor(${r.id})">🏷</button>${r.status!=='descargando'?`<button class="${compact?'icon-btn':'secondary resource-download-btn'}" title="${dlTitle}" onclick="download(${r.id})">${compact?'↓':'↓ Descargar'}</button>`:''}${r.local_path?`<button class="icon-btn" title="Abrir carpeta" onclick="openFolder(${r.id})">⌂</button><button class="icon-btn" title="Comprimir ZIP" onclick="zipResource(${r.id})">ZIP</button>`:''}<button class="icon-btn" title="Ver detalles" onclick="detail(${r.id})">⋯</button></div></div>`
+    const sourceDetail=isManual?`<span class="source-badge source-manual">Manual</span>`:`<span class="source-badge source-drive">Google Drive</span>`;
+    return `<div class="resource"><div><div class="resource-title">${esc(r.name)}</div><div class="resource-sub">${esc(r.category_name||'Sin categoría')} · ${esc(r.subcategory_name||'General')} · ${r.file_count||0} archivos · ${fmtBytes(r.total_bytes)} · ${sourceDetail}</div>${r.live?`<div class="progress"><i style="width:${r.live.progress||0}%"></i></div><div class="resource-sub">${esc(r.live.message||'')}</div>`:''}${r.error&&!r.live&&r.status==='error'?`<div class="resource-sub error-summary">Requiere revisión. Abre Detalles para ver qué ocurrió.</div>`:''}${r.tags?.length?`<div class="chips resource-tags">${r.tags.map(t=>`<span class="chip">#${esc(t.name)}</span>`).join('')}</div>`:''}</div><div class="resource-sub">${isManual?'Creado dentro de Biblioteca':esc(r.url)}</div><div><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="res-actions">${r.local_path?`<button class="icon-btn" title="Abrir en Biblioteca" onclick="openExplorer(${r.id})">Abrir</button>`:''}<button class="icon-btn" title="Editar clasificación" onclick="openResourceMetadataEditorFor(${r.id})">Editar</button><button class="icon-btn" title="Etiquetas" onclick="openResourceTagEditorFor(${r.id})">🏷</button>${!isManual&&r.status!=='descargando'?`<button class="${compact?'icon-btn':'secondary resource-download-btn'}" title="${dlTitle}" onclick="download(${r.id})">${compact?'↓':'↓ Descargar'}</button>`:''}${r.local_path?`<button class="icon-btn" title="Abrir carpeta" onclick="openFolder(${r.id})">⌂</button><button class="icon-btn" title="Comprimir ZIP" onclick="zipResource(${r.id})">ZIP</button>`:''}<button class="icon-btn" title="Ver detalles" onclick="detail(${r.id})">⋯</button></div></div>`
   }).join('')
 }
 async function download(id){try{await api(`/api/resources/${id}/download`,{method:'POST'});toast('Descarga iniciada');setTimeout(loadLibrary,500)}catch(e){toast(e.message)}}
@@ -292,7 +325,7 @@ async function detail(id){
     const types=(r.types||[]).map(t=>`<span class="type-pill"><b>${esc((t.ext||'').toUpperCase())}</b> · ${t.count} · ${fmtBytes(t.bytes)}</span>`).join('');
     const files=(r.files||[]).slice(0,100).map(f=>`<tr><td>${esc(f.rel_path)}</td><td>${esc((f.ext||'').toUpperCase())}</td><td>${fmtBytes(f.size_bytes)}</td></tr>`).join('');
     const technical=r.error?`<h3>${r.status==='error'?'Detalle del error':'Nota técnica de descarga'}</h3><div class="technical-detail ${r.status==='error'?'':'technical-note'}">${esc(r.error)}</div>`:'';
-    document.getElementById('modalContent').innerHTML=`<h2>${esc(r.name)}</h2><p class="muted">${esc(r.category_name||'')} / ${esc(r.subcategory_name||'General')}</p><div class="detail-grid"><div class="detail-box"><b>Estado</b><br><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="detail-box"><b>Contenido local</b><br>${r.file_count} archivos · ${fmtBytes(r.total_bytes)}</div></div><h3>Tipos de archivo</h3><div class="type-grid">${types||'<span class="muted">Sin indexar</span>'}</div>${technical}<div class="actions left-actions">${r.local_path?`<button class="primary" onclick="closeModal();openExplorer(${r.id})">Explorar contenido</button>`:''}<button class="secondary" onclick="openResourceTagEditorFor(${r.id})">Etiquetas</button><button class="secondary" onclick="download(${r.id})">↓ Descargar / actualizar</button><button class="secondary" onclick="openFolder(${r.id})">Abrir carpeta</button><button class="secondary" onclick="rescan(${r.id})">Reindexar</button><button class="secondary" onclick="zipResource(${r.id})">Crear ZIP</button><button class="danger" onclick="deleteResource(${r.id})">Eliminar</button></div><h3>Archivos <small class="muted">(máx. 100 visibles)</small></h3><table class="file-table"><thead><tr><th>Ruta</th><th>Tipo</th><th>Tamaño</th></tr></thead><tbody>${files||'<tr><td colspan="3">Sin archivos indexados.</td></tr>'}</tbody></table>`;
+    document.getElementById('modalContent').innerHTML=`<h2>${esc(r.name)}</h2><p class="muted">${esc(r.category_name||'')} / ${esc(r.subcategory_name||'General')} · Fuente: ${sourceLabel(r)}</p><div class="detail-grid"><div class="detail-box"><b>Estado</b><br><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="detail-box"><b>Contenido local</b><br>${r.file_count} archivos · ${fmtBytes(r.total_bytes)}</div></div><h3>Tipos de archivo</h3><div class="type-grid">${types||'<span class="muted">Sin indexar</span>'}</div>${technical}<div class="actions left-actions">${r.local_path?`<button class="primary" onclick="closeModal();openExplorer(${r.id})">Explorar contenido</button>`:''}<button class="secondary" onclick="openResourceTagEditorFor(${r.id})">Etiquetas</button>${r.source_type==='manual'?'':`<button class="secondary" onclick="download(${r.id})">↓ Descargar / actualizar</button>`}<button class="secondary" onclick="openFolder(${r.id})">Abrir carpeta</button><button class="secondary" onclick="rescan(${r.id})">Reindexar</button><button class="secondary" onclick="zipResource(${r.id})">Crear ZIP</button><button class="danger" onclick="deleteResource(${r.id})">Eliminar</button></div><h3>Archivos <small class="muted">(máx. 100 visibles)</small></h3><table class="file-table"><thead><tr><th>Ruta</th><th>Tipo</th><th>Tamaño</th></tr></thead><tbody>${files||'<tr><td colspan="3">Sin archivos indexados.</td></tr>'}</tbody></table>`;
     document.getElementById('modal').classList.remove('hidden')
   }catch(e){toast(e.message)}
 }
@@ -301,7 +334,7 @@ function closeModal(){document.getElementById('modal').classList.add('hidden')}
 // EXPLORADOR
 async function loadExplorerResources(preselect=null){try{const rs=(await api('/api/resources')).filter(r=>r.local_path);const sel=document.getElementById('explorerResource');const keep=preselect||sel.value;sel.innerHTML='<option value="">Selecciona un recurso...</option>'+rs.map(r=>`<option value="${r.id}">${esc(r.name)} · ${r.file_count} archivos</option>`).join('');if(keep)sel.value=String(keep);if(keep&&sel.value)await selectExplorerResource()}catch(e){toast(e.message)}}
 async function openExplorer(id){go('library');document.getElementById('libraryHome')?.classList.add('hidden');document.getElementById('libraryExplorerView')?.classList.remove('hidden');setTimeout(()=>loadExplorerResources(id),60)}
-async function selectExplorerResource(){const rid=Number(document.getElementById('explorerResource').value);EXPLORER.rid=rid||null;EXPLORER.path='';EXPLORER.selected.clear();await ensureTags();await ensureFolderTemplates();if(!rid){document.getElementById('explorerEmpty').classList.remove('hidden');document.getElementById('explorerWorkspace').classList.add('hidden');return}try{const d=await api(`/api/resources/${rid}/tree`);EXPLORER.resource=d.resource;document.getElementById('explorerEmpty').classList.add('hidden');document.getElementById('explorerWorkspace').classList.remove('hidden');renderFolderTree(d.tree);await browseExplorer('')}catch(e){toast(e.message)}}
+async function selectExplorerResource(){const rid=Number(document.getElementById('explorerResource').value);EXPLORER.rid=rid||null;EXPLORER.path='';EXPLORER.selected.clear();await ensureTags();if(!rid){document.getElementById('explorerEmpty').classList.remove('hidden');document.getElementById('explorerWorkspace').classList.add('hidden');return}try{const d=await api(`/api/resources/${rid}/tree`);EXPLORER.resource=d.resource;document.getElementById('explorerEmpty').classList.add('hidden');document.getElementById('explorerWorkspace').classList.remove('hidden');renderFolderTree(d.tree);await browseExplorer('')}catch(e){toast(e.message)}}
 function renderFolderTree(nodes){const render=(arr)=>arr.map(n=>{const ep=encodeURIComponent(n.path);return `<div class="tree-node"><button onclick="browseExplorer(decodeURIComponent('${ep}'))">📁 ${esc(n.name)}</button>${n.children?.length?`<div class="tree-children">${render(n.children)}</div>`:''}</div>`}).join('');document.getElementById('folderTree').innerHTML=render(nodes)}
 async function browseExplorer(path=''){if(!EXPLORER.rid)return;try{const d=await api(`/api/resources/${EXPLORER.rid}/browse?path=${encodeURIComponent(path)}`);EXPLORER.path=d.current_path;EXPLORER.items=d.items;EXPLORER.selected.clear();renderExplorerBreadcrumb();renderExplorerItems();updateSelectionBar()}catch(e){toast(e.message)}}
 function renderExplorerBreadcrumb(){const parts=EXPLORER.path?EXPLORER.path.split('/'):[];let html=`<button onclick="browseExplorer('')">${esc(EXPLORER.resource?.name||'Raíz')}</button>`;let acc=[];for(const p of parts){acc.push(p);const ep=encodeURIComponent(acc.join('/'));html+=`<span>›</span><button onclick="browseExplorer(decodeURIComponent('${ep}'))">${esc(p)}</button>`}document.getElementById('explorerBreadcrumb').innerHTML=html;const files=EXPLORER.items.filter(x=>x.kind==='file').length,folders=EXPLORER.items.filter(x=>x.kind==='folder').length;document.getElementById('explorerSummary').textContent=`${folders} carpetas · ${files} archivos`}
@@ -326,6 +359,32 @@ async function explorerNewFolder(){if(!EXPLORER.rid)return toast('Selecciona un 
 async function explorerOpenCurrent(){if(!EXPLORER.rid)return;try{await api(`/api/resources/${EXPLORER.rid}/folder/open`,{method:'POST',body:JSON.stringify({path:EXPLORER.path})})}catch(e){toast(e.message)}}
 async function openExplorerFile(path){try{await api(`/api/resources/${EXPLORER.rid}/file/open`,{method:'POST',body:JSON.stringify({path})})}catch(e){toast(e.message)}}
 async function explorerRescan(){if(!EXPLORER.rid)return;const current=EXPLORER.path;try{const d=await api(`/api/resources/${EXPLORER.rid}/rescan`,{method:'POST'});toast(`Sincronizado: ${d.file_count} archivos`);await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}}
+async function chooseLocalFiles(){
+  try{
+    if(window.pywebview&&window.pywebview.api&&window.pywebview.api.choose_files){return await window.pywebview.api.choose_files()}
+  }catch(e){console.warn(e)}
+  toast('El selector de archivos está disponible en la aplicación instalada de Windows.');
+  return []
+}
+async function explorerImportFiles(){
+  if(!EXPLORER.rid)return toast('Selecciona un recurso');
+  const paths=await chooseLocalFiles();if(!paths||!paths.length)return;
+  const current=EXPLORER.path;
+  try{const d=await api(`/api/resources/${EXPLORER.rid}/files/import`,{method:'POST',body:JSON.stringify({paths,target_path:current})});toast(`${d.copied} archivos importados${d.skipped?` · ${d.skipped} omitidos`:''}`);await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}
+}
+async function deleteExplorerSelected(){
+  if(!EXPLORER.rid||!EXPLORER.selected.size)return;
+  if(!confirm(`Se eliminarán ${EXPLORER.selected.size} archivos de la carpeta física. Esta acción no se puede deshacer. ¿Continuar?`))return;
+  const current=EXPLORER.path;
+  try{const d=await api(`/api/resources/${EXPLORER.rid}/items/delete`,{method:'POST',body:JSON.stringify({paths:[...EXPLORER.selected]})});toast(`${d.deleted} elementos eliminados`);EXPLORER.selected.clear();await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}
+}
+async function openResourceMetadataEditor(){if(!EXPLORER.rid)return toast('Selecciona un recurso');return openResourceMetadataEditorFor(EXPLORER.rid)}
+async function openResourceMetadataEditorFor(rid){
+  try{await Promise.all([loadCategories(),ensureTags()]);const r=await api(`/api/resources/${rid}`);const catOpts=CATEGORIES.map(c=>`<option value="${c.id}" ${Number(r.category_id)===c.id?'selected':''}>${esc(c.name)}</option>`).join('');const cat=CATEGORIES.find(c=>c.id===Number(r.category_id));const subOpts='<option value="">General</option>'+((cat?.subcategories||[]).map(x=>`<option value="${x.id}" ${Number(r.subcategory_id)===x.id?'selected':''}>${esc(x.name)}</option>`).join(''));document.getElementById('modalContent').innerHTML=`<h2>Editar clasificación</h2><p class="muted">Fuente: <b>${sourceLabel(r)}</b></p><label>Nombre<input id="metaName" value="${esc(r.name)}"></label><label>Categoría<select id="metaCategory" onchange="refreshMetadataSubcategories(${rid})">${catOpts}</select></label><label>Subcategoría<select id="metaSubcategory">${subOpts}</select></label><h3>Etiquetas</h3>${tagChecklist((r.tags||[]).map(x=>x.id))}<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveResourceMetadata(${rid})">Guardar cambios</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}
+}
+function refreshMetadataSubcategories(){const catId=Number(document.getElementById('metaCategory')?.value||0);const cat=CATEGORIES.find(c=>c.id===catId);const s=document.getElementById('metaSubcategory');if(s)s.innerHTML='<option value="">General</option>'+((cat?.subcategories||[]).map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join(''))}
+async function saveResourceMetadata(rid){const name=document.getElementById('metaName').value.trim(),category_id=Number(document.getElementById('metaCategory').value),subcategory_id=document.getElementById('metaSubcategory').value?Number(document.getElementById('metaSubcategory').value):null,tag_ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value));try{await api(`/api/resources/${rid}/metadata`,{method:'PUT',body:JSON.stringify({name,category_id,subcategory_id,tag_ids})});closeModal();toast('Clasificación actualizada');if(EXPLORER.rid===rid)await loadExplorerResources(rid);loadLibrary()}catch(e){toast(e.message)}}
+
 async function organizeSelected(operation){if(!EXPLORER.selected.size)return;const current=EXPLORER.path;const target=prompt(`Ruta de carpeta destino dentro del recurso.\nEjemplo: Seleccionados/Camisetas\nSe creará si no existe.`,current||'Seleccionados');if(target===null)return;try{const d=await api(`/api/resources/${EXPLORER.rid}/files/organize`,{method:'POST',body:JSON.stringify({paths:[...EXPLORER.selected],target_path:target,operation})});toast(`${d.processed} archivos ${operation==='copy'?'copiados':'movidos'}`);await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}}
 async function renameExplorerPath(path,isFile){const currentPath=EXPLORER.path;const current=path.split('/').pop();const name=prompt(isFile?'Nuevo nombre del archivo:':'Nuevo nombre de la carpeta:',current);if(!name||name===current)return;try{await api(`/api/resources/${EXPLORER.rid}/rename`,{method:'POST',body:JSON.stringify({path,new_name:name})});toast('Nombre actualizado');await selectExplorerResource();await browseExplorer(currentPath)}catch(e){toast(e.message)}}
 async function zipSelected(){if(!EXPLORER.selected.size)return;const name=prompt('Nombre del archivo ZIP:','Seleccion_Sorprezz');if(!name)return;try{const d=await api(`/api/resources/${EXPLORER.rid}/files/zip`,{method:'POST',body:JSON.stringify({paths:[...EXPLORER.selected],name})});toast(`ZIP creado con ${d.files} archivos`)}catch(e){toast(e.message)}}
@@ -441,11 +500,8 @@ async function zipCollection(id){try{const d=await api(`/api/collections/${id}/z
 async function removeCollectionItem(cid,itemId){if(!confirm('¿Quitar esta copia de la colección? El original no se borrará.'))return;try{await api(`/api/collections/${cid}/items/${itemId}`,{method:'DELETE'});toast('Copia retirada');collectionDetail(cid);loadCollections()}catch(e){toast(e.message)}}
 async function deleteCollection(id){if(!confirm('¿Eliminar esta colección y su carpeta física? Los archivos originales de Biblioteca no se borrarán.'))return;try{await api(`/api/collections/${id}`,{method:'DELETE'});closeModal();toast('Colección eliminada');loadCollections()}catch(e){toast(e.message)}}
 
-async function addGlobalSelectionToCatalog(){if(!GLOBAL_SELECTED.size)return toast('Selecciona imágenes');PENDING_GLOBAL_CATALOG_REFS=[...GLOBAL_SELECTED.values()];document.getElementById('modalContent').innerHTML=`<h2>Agregar selección global al catálogo</h2><p class="muted">${PENDING_GLOBAL_CATALOG_REFS.length} imágenes de distintos recursos.</p><div class="catalog-form"><label>Producto<select id="globalCatProduct">${catalogProductOptions('Otro')}</select></label><label>Técnica<select id="globalCatTechnique"><option>Sublimación</option><option>DTF</option><option>Vinil textil</option><option>Otro</option></select></label><label>Estado<select id="globalCatStatus"><option value="seleccionado">Seleccionado</option><option value="preparacion">En preparación</option><option value="listo">Listo para catálogo</option><option value="publicado">Publicado</option></select></label><label>Etiquetas<input id="globalCatTags" placeholder="Ej. verano, mujer"></label></div><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createGlobalCatalogItems()">Agregar al catálogo</button></div>`;document.getElementById('modal').classList.remove('hidden')}
-async function createGlobalCatalogItems(){const refs=[...PENDING_GLOBAL_CATALOG_REFS],product_type=document.getElementById('globalCatProduct').value,technique=document.getElementById('globalCatTechnique').value,status=document.getElementById('globalCatStatus').value,tags=document.getElementById('globalCatTags').value.trim();let ok=0,skip=0;try{for(const ref of refs){const asset=GLOBAL_ASSETS.find(a=>a.resource_id===ref.resource_id&&a.rel_path===ref.path);try{await api('/api/catalog',{method:'POST',body:JSON.stringify({resource_id:ref.resource_id,source_rel_path:ref.path,title:(asset?.name||ref.path.split('/').pop()).replace(/\.[^.]+$/,''),product_type,technique,print_size:'',variants:'',status,sku:'',price:'',tags,notes:''})});ok++}catch(e){if(String(e.message).includes('ya está agregado'))skip++;else throw e}}closeModal();PENDING_GLOBAL_CATALOG_REFS=[];toast(`${ok} diseños agregados al catálogo${skip?` · ${skip} ya existían`:''}`)}catch(e){toast(e.message)}}
 
-
-// ETIQUETAS Y LISTAS DE CARPETAS
+// ETIQUETAS Y ORGANIZACIÓN
 async function ensureTags(){
   try{
     TAGS=await api('/api/tags');
@@ -453,24 +509,15 @@ async function ensureTags(){
     if(sel){const keep=sel.value;sel.innerHTML='<option value="">Todas las etiquetas</option>'+TAGS.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');sel.value=keep}
   }catch(e){console.warn(e)}
 }
-async function ensureFolderTemplates(){
-  try{
-    FOLDER_TEMPLATES=await api('/api/folder-templates');
-    const sel=document.getElementById('explorerTemplate');
-    if(sel){const keep=sel.value;sel.innerHTML='<option value="">Plantilla de carpetas…</option>'+FOLDER_TEMPLATES.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');sel.value=keep}
-  }catch(e){console.warn(e)}
-}
 function setOrganizationTab(tab){
-  const all=['categories','tags','templates'];
-  for(const name of all){
-    document.getElementById('org'+name[0].toUpperCase()+name.slice(1))?.classList.toggle('hidden',name!==tab);
-    document.getElementById('org'+name[0].toUpperCase()+name.slice(1)+'Btn')?.classList.toggle('active',name===tab);
-  }
-  if(tab==='categories')loadCategories();
-  if(tab==='tags'){ensureTags().then(renderTagsManager);}
-  if(tab==='templates')loadUtilities();
+  const current=tab==='tags'?'tags':'categories';
+  document.getElementById('orgCategories')?.classList.toggle('hidden',current!=='categories');
+  document.getElementById('orgTags')?.classList.toggle('hidden',current!=='tags');
+  document.getElementById('orgCategoriesBtn')?.classList.toggle('active',current==='categories');
+  document.getElementById('orgTagsBtn')?.classList.toggle('active',current==='tags');
+  if(current==='categories')loadCategories();else ensureTags().then(renderTagsManager);
 }
-async function loadUtilities(){await ensureTags();await ensureFolderTemplates();renderTagsManager();renderFolderTemplates();try{const rs=(await api('/api/resources')).filter(r=>r.local_path);const rsel=document.getElementById('utilityResource');if(rsel){const keep=rsel.value;rsel.innerHTML='<option value="">Selecciona un recurso...</option>'+rs.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('');rsel.value=keep}const tsel=document.getElementById('utilityTemplate');if(tsel){const keep=tsel.value;tsel.innerHTML='<option value="">Selecciona una lista...</option>'+FOLDER_TEMPLATES.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');tsel.value=keep}}catch(e){toast(e.message)}}
+async function loadUtilities(){await ensureTags();renderTagsManager()}
 function renderTagsManager(){const el=document.getElementById('tagsManager');if(!el)return;el.innerHTML=TAGS.length?TAGS.map(t=>`<div class="tag-row"><span class="chip strong">#${esc(t.name)}</span><span class="muted">${t.resources||0} recursos · ${t.folders||0} carpetas · ${t.files||0} archivos</span><button class="mini-link danger-text" onclick="deleteTag(${t.id})">Eliminar</button></div>`).join(''):'<div class="empty small">Todavía no hay etiquetas.</div>'}
 async function createTag(){const i=document.getElementById('newTagName');const name=i.value.trim();if(!name)return;try{await api('/api/tags',{method:'POST',body:JSON.stringify({name})});i.value='';await loadUtilities();await loadDownloadsSetup();toast('Etiqueta creada')}catch(e){toast(e.message)}}
 async function deleteTag(id){if(!confirm('¿Eliminar esta etiqueta? Se quitará de los recursos y carpetas donde esté asignada.'))return;try{await api(`/api/tags/${id}`,{method:'DELETE'});await loadUtilities();toast('Etiqueta eliminada')}catch(e){toast(e.message)}}
@@ -483,44 +530,6 @@ async function openCurrentFolderTagEditor(){if(!EXPLORER.rid)return toast('Selec
 async function openFolderTagEditor(path=''){if(!EXPLORER.rid)return toast('Selecciona un recurso');await ensureTags();try{const current=await api(`/api/resources/${EXPLORER.rid}/folder-tags?path=${encodeURIComponent(path)}`);const label=path||'Raíz del recurso';document.getElementById('modalContent').innerHTML=`<h2>Etiquetas de carpeta</h2><p class="muted">Carpeta: <b>${esc(label)}</b></p>${tagChecklist(current.map(x=>x.id))}<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveFolderTagsFor(decodeURIComponent('${encodeURIComponent(path)}'))">Guardar etiquetas</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
 async function saveCurrentFolderTags(){return saveFolderTagsFor(EXPLORER.path)}
 async function saveFolderTagsFor(path=''){const ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value));try{await api(`/api/resources/${EXPLORER.rid}/folder-tags`,{method:'PUT',body:JSON.stringify({path,tag_ids:ids})});closeModal();toast('Etiquetas de carpeta guardadas');await browseExplorer(EXPLORER.path)}catch(e){toast(e.message)}}
-async function createFolderTemplate(){const name=document.getElementById('templateName').value.trim(),description=document.getElementById('templateDescription').value.trim(),folders=document.getElementById('templateFolders').value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);if(!name||!folders.length)return toast('Escribe un nombre y al menos una carpeta');try{await api('/api/folder-templates',{method:'POST',body:JSON.stringify({name,description,folders})});document.getElementById('templateName').value='';document.getElementById('templateDescription').value='';document.getElementById('templateFolders').value='';await loadUtilities();toast('Lista de carpetas guardada')}catch(e){toast(e.message)}}
-function renderFolderTemplates(){const el=document.getElementById('folderTemplates');if(!el)return;el.innerHTML=FOLDER_TEMPLATES.length?FOLDER_TEMPLATES.map(t=>`<div class="template-card"><div class="template-head"><div><h3>${esc(t.name)}</h3><p class="muted">${esc(t.description||'Sin descripción')}</p></div><button class="mini-link danger-text" onclick="deleteFolderTemplate(${t.id})">Eliminar</button></div><div class="template-paths">${t.folders.map(f=>`<span>📁 ${esc(f)}</span>`).join('')}</div><div class="template-foot"><b>${t.folders.length} rutas</b><button class="secondary" onclick="editFolderTemplate(${t.id})">Editar</button></div></div>`).join(''):'<div class="empty">Todavía no hay listas de carpetas guardadas.</div>'}
-async function deleteFolderTemplate(id){if(!confirm('¿Eliminar esta lista de carpetas? No se borrarán las carpetas físicas ya creadas.'))return;try{await api(`/api/folder-templates/${id}`,{method:'DELETE'});await loadUtilities();toast('Lista eliminada')}catch(e){toast(e.message)}}
-async function editFolderTemplate(id){const t=FOLDER_TEMPLATES.find(x=>x.id===id);if(!t)return;document.getElementById('modalContent').innerHTML=`<h2>Editar lista de carpetas</h2><label>Nombre<input id="editTplName" value="${esc(t.name)}"></label><label>Descripción<input id="editTplDescription" value="${esc(t.description||'')}"></label><label>Carpetas<textarea id="editTplFolders" rows="12">${esc(t.folders.join('\n'))}</textarea></label><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveFolderTemplate(${id})">Guardar cambios</button></div>`;document.getElementById('modal').classList.remove('hidden')}
-async function saveFolderTemplate(id){const name=document.getElementById('editTplName').value.trim(),description=document.getElementById('editTplDescription').value.trim(),folders=document.getElementById('editTplFolders').value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);try{await api(`/api/folder-templates/${id}`,{method:'PUT',body:JSON.stringify({name,description,folders})});closeModal();await loadUtilities();toast('Lista actualizada')}catch(e){toast(e.message)}}
-async function applyFolderTemplate(){if(!EXPLORER.rid)return toast('Selecciona un recurso');const current=EXPLORER.path;const id=Number(document.getElementById('explorerTemplate').value);if(!id)return toast('Selecciona una plantilla de carpetas');const t=FOLDER_TEMPLATES.find(x=>x.id===id);const where=current||'raíz del recurso';if(!confirm(`Se creará la estructura “${t?.name||''}” dentro de ${where}.\n\nLas carpetas que ya existan se conservarán.`))return;try{const d=await api(`/api/resources/${EXPLORER.rid}/folder-templates/${id}/apply`,{method:'POST',body:JSON.stringify({parent_path:current})});toast(`Estructura lista: ${d.created_count} carpetas nuevas`);await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}}
-// CATÁLOGO
-function catalogProductOptions(selected='Otro'){return PRODUCT_TYPES.map(x=>`<option ${x===selected?'selected':''}>${esc(x)}</option>`).join('')}
-async function openCatalogCreate(){
-  if(!EXPLORER.selected.size)return toast('Selecciona al menos una imagen o archivo');
-  const paths=[...EXPLORER.selected];
-  const first=EXPLORER.items.find(x=>x.path===paths[0]);
-  const suggested=CATEGORY_PRODUCT_MAP[EXPLORER.resource?.category_name]||'Otro';
-  const many=paths.length>1;
-  document.getElementById('modalContent').innerHTML=`<h2>${many?`Agregar ${paths.length} diseños al catálogo`:'Agregar al catálogo'}</h2><p class="muted">Se crea una copia en Catalogo_Sorprezz; los originales permanecen intactos.</p><div class="catalog-form">${many?'':`<label>Nombre comercial<input id="catTitle" value="${esc((first?.name||'Diseño').replace(/\.[^.]+$/,''))}"></label>`}<label>Producto<select id="catProduct">${catalogProductOptions(PRODUCT_TYPES.includes(suggested)?suggested:'Otro')}</select></label><label>Técnica<select id="catTechnique"><option>Sublimación</option><option>DTF</option><option>Vinil textil</option><option>Otro</option></select></label><label>Estado<select id="catStatus"><option value="seleccionado">Seleccionado</option><option value="preparacion">En preparación</option><option value="listo">Listo para catálogo</option><option value="publicado">Publicado</option></select></label><label>Medida / área de impresión<input id="catPrintSize" placeholder="Ej. 20 x 25 cm"></label><label>Variantes<input id="catVariants" placeholder="Tallas, colores o modelos"></label>${many?'':`<label>SKU<input id="catSku" placeholder="Opcional"></label><label>Precio referencial<input id="catPrice" placeholder="Ej. 12.00"></label>`}<label class="wide">Etiquetas<input id="catTags" placeholder="Disney, Stitch, Día de la Madre..."></label><label class="wide">Notas<textarea id="catNotes" rows="3" placeholder="Notas de producción..."></textarea></label></div><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createCatalogItems()">${many?'Agregar seleccionados':'Guardar en catálogo'}</button></div>`;
-  document.getElementById('modal').classList.remove('hidden')
-}
-async function createCatalogItem(path){EXPLORER.selected=new Set([path]);return createCatalogItems()}
-async function createCatalogItems(){
-  const paths=[...EXPLORER.selected];if(!paths.length)return;
-  const many=paths.length>1;let ok=0,skipped=0;
-  for(const path of paths){
-    const item=EXPLORER.items.find(x=>x.path===path);
-    if(!item||item.kind!=='file'){skipped++;continue}
-    const payload={resource_id:EXPLORER.rid,source_rel_path:path,title:many?(item.name||'Diseño').replace(/\.[^.]+$/,''):document.getElementById('catTitle').value.trim(),product_type:document.getElementById('catProduct').value,technique:document.getElementById('catTechnique').value,print_size:document.getElementById('catPrintSize').value.trim(),variants:document.getElementById('catVariants').value.trim(),status:document.getElementById('catStatus').value,sku:many?'':document.getElementById('catSku').value.trim(),price:many?'':document.getElementById('catPrice').value.trim(),tags:document.getElementById('catTags').value.trim(),notes:document.getElementById('catNotes').value.trim()};
-    try{await api('/api/catalog',{method:'POST',body:JSON.stringify(payload)});ok++}catch(e){if(String(e.message).includes('ya está agregado'))skipped++;else throw e}
-  }
-  closeModal();clearExplorerSelection();toast(`${ok} diseño${ok===1?'':'s'} agregado${ok===1?'':'s'} al catálogo${skipped?` · ${skipped} omitidos`:''}`);await browseExplorer(EXPLORER.path)
-}
-async function loadCatalog(){try{const qRaw=document.getElementById('catalogSearch')?.value||'',sRaw=document.getElementById('catalogStatus')?.value||'',tRaw=document.getElementById('catalogType')?.value||'';const items=await api(`/api/catalog?q=${encodeURIComponent(qRaw)}&status=${encodeURIComponent(sRaw)}&product_type=${encodeURIComponent(tRaw)}`);const filtered=Boolean(qRaw||sRaw||tRaw);document.getElementById('catalogGrid').innerHTML=items.length?items.map(c=>`<div class="catalog-card" onclick="catalogDetail(${c.id})"><div class="catalog-image"><img src="/api/catalog/${c.id}/preview" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'" alt=""><div class="catalog-placeholder">${fileIcon((c.catalog_path||'').split('.').pop())}</div></div><div class="catalog-body"><div class="catalog-title">${esc(c.title)}</div><div class="catalog-product">${esc(c.product_type)} · ${esc(c.technique||'Sublimación')}</div><div class="catalog-tags">${esc(c.tags||'Sin etiquetas')}</div><div class="catalog-footer"><span class="catalog-status cs-${c.status}">${catalogStatusLabel(c.status)}</span>${c.price?`<b>$${esc(c.price)}</b>`:''}</div></div></div>`).join(''):(filtered?'<div class="panel empty">No hay diseños que coincidan con los filtros actuales.<br><button class="secondary inline-empty-btn" onclick="clearCatalogFilters()">Limpiar filtros</button></div>':'<div class="panel empty">Todavía no hay diseños en el catálogo.<br>Ve a <b>Explorador</b>, selecciona una o varias imágenes y pulsa “Agregar al catálogo”.<br><button class="primary inline-empty-btn" onclick="go(\'explorer\')">Ir al Explorador</button></div>')}catch(e){toast(e.message)}}
-async function catalogDetail(id){try{const c=await api(`/api/catalog/${id}`);document.getElementById('modalContent').innerHTML=`<div class="catalog-detail-head"><img src="/api/catalog/${id}/preview" onerror="this.style.display='none'"><div><h2>${esc(c.title)}</h2><p class="muted">Origen: ${esc(c.resource_name||'')} / ${esc(c.source_rel_path||'')}</p></div></div><div class="catalog-form"><label>Nombre comercial<input id="editCatTitle" value="${esc(c.title)}"></label><label>Producto<select id="editCatProduct">${catalogProductOptions(c.product_type)}</select></label><label>Técnica<select id="editCatTechnique"><option ${c.technique==='Sublimación'?'selected':''}>Sublimación</option><option ${c.technique==='DTF'?'selected':''}>DTF</option><option ${c.technique==='Vinil textil'?'selected':''}>Vinil textil</option><option ${c.technique==='Otro'?'selected':''}>Otro</option></select></label><label>Medida / área de impresión<input id="editCatPrintSize" value="${esc(c.print_size||'')}"></label><label>Variantes<input id="editCatVariants" value="${esc(c.variants||'')}"></label><label>Estado<select id="editCatStatus"><option value="seleccionado" ${c.status==='seleccionado'?'selected':''}>Seleccionado</option><option value="preparacion" ${c.status==='preparacion'?'selected':''}>En preparación</option><option value="listo" ${c.status==='listo'?'selected':''}>Listo para catálogo</option><option value="publicado" ${c.status==='publicado'?'selected':''}>Publicado</option></select></label><label>SKU<input id="editCatSku" value="${esc(c.sku||'')}"></label><label>Precio referencial<input id="editCatPrice" value="${esc(c.price||'')}"></label><label>Etiquetas<input id="editCatTags" value="${esc(c.tags||'')}"></label><label class="wide">Notas<textarea id="editCatNotes" rows="4">${esc(c.notes||'')}</textarea></label></div><div class="actions left-actions"><button class="secondary" onclick="openCatalogFolder(${id})">Abrir carpeta de catálogo</button><button class="danger" onclick="deleteCatalogItem(${id})">Quitar del catálogo</button><button class="primary" onclick="saveCatalogItem(${id})">Guardar cambios</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
-async function saveCatalogItem(id){try{const p={title:document.getElementById('editCatTitle').value.trim(),product_type:document.getElementById('editCatProduct').value,technique:document.getElementById('editCatTechnique').value,print_size:document.getElementById('editCatPrintSize').value.trim(),variants:document.getElementById('editCatVariants').value.trim(),status:document.getElementById('editCatStatus').value,sku:document.getElementById('editCatSku').value.trim(),price:document.getElementById('editCatPrice').value.trim(),tags:document.getElementById('editCatTags').value.trim(),notes:document.getElementById('editCatNotes').value.trim()};await api(`/api/catalog/${id}`,{method:'PUT',body:JSON.stringify(p)});closeModal();loadCatalog();toast('Catálogo actualizado')}catch(e){toast(e.message)}}
-async function openCatalogFolder(id){try{await api(`/api/catalog/${id}/open`,{method:'POST'})}catch(e){toast(e.message)}}
-async function deleteCatalogItem(id){const del=confirm('¿También deseas borrar la copia creada dentro de Catalogo_Sorprezz?\nAceptar = quitar y borrar copia.\nCancelar = quitar solo del catálogo.');if(!confirm('¿Confirmas quitar este elemento del catálogo?'))return;try{await api(`/api/catalog/${id}?delete_copy=${del?'true':'false'}`,{method:'DELETE'});closeModal();loadCatalog();toast('Elemento retirado del catálogo')}catch(e){toast(e.message)}}
-async function exportCatalog(){try{const d=await api('/api/catalog/export',{method:'POST'});toast(`CSV creado: ${d.items} elementos`)}catch(e){toast(e.message)}}
-
-
-function clearCatalogFilters(){document.getElementById('catalogSearch').value='';document.getElementById('catalogStatus').value='';document.getElementById('catalogType').value='';loadCatalog()}
 function clearLibraryFilters(){document.getElementById('searchQ').value='';document.getElementById('filterCategory').value='';document.getElementById('filterStatus').value='';if(document.getElementById('filterTag'))document.getElementById('filterTag').value='';loadLibrary()}
 async function syncAllResources(){
   try{
@@ -536,7 +545,6 @@ async function syncAllResources(){
     }
   }catch(e){toast(e.message)}
 }
-async function applyTemplateFromUtilities(){const rid=Number(document.getElementById('utilityResource')?.value||0),tid=Number(document.getElementById('utilityTemplate')?.value||0),parent=(document.getElementById('utilityParentPath')?.value||'').trim();if(!rid||!tid)return toast('Selecciona un recurso y una plantilla');const t=FOLDER_TEMPLATES.find(x=>x.id===tid);if(!confirm(`Crear la estructura “${t?.name||''}” ${parent?`dentro de ${parent}`:'en la raíz del recurso'}?`))return;try{const d=await api(`/api/resources/${rid}/folder-templates/${tid}/apply`,{method:'POST',body:JSON.stringify({parent_path:parent})});toast(`Estructura creada: ${d.created_count} carpetas nuevas`)}catch(e){toast(e.message)}}
 async function loadSettings(){const c=await api('/api/config');document.getElementById('libraryPath').value=c.library_path;document.getElementById('configMeta').innerHTML=`Versión ${c.version}<br>Base de datos: ${esc(c.db_path)}`}
 async function chooseLibraryFolder(){try{if(window.pywebview&&window.pywebview.api&&window.pywebview.api.choose_folder){const p=await window.pywebview.api.choose_folder();if(p)document.getElementById('libraryPath').value=p;return}toast('El selector de carpetas está disponible en la aplicación instalada de Windows.')}catch(e){toast(e.message||'No se pudo abrir el selector de carpetas')}}
 async function saveSettings(){const p=document.getElementById('libraryPath').value.trim();if(!p)return;try{const d=await api('/api/config',{method:'PUT',body:JSON.stringify({library_path:p})});toast('Ubicación guardada: '+d.library_path);loadSettings()}catch(e){toast(e.message)}}
