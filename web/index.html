@@ -23,7 +23,7 @@
       <button class="nav" data-page="utilities">🏷 <span>Etiquetas y listas</span></button>
       <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
     </nav>
-    <div class="version">Versión 1.4</div>
+    <div class="version">Versión 1.4.1</div>
   </aside>
 
   <main>
@@ -39,7 +39,7 @@
       <div class="stats" id="stats"></div>
       <div class="panel quick-tools">
         <div><h2>Herramientas rápidas</h2><p class="muted">Explora diseños, crea carpetas y prepara material para el catálogo de sublimación.</p></div>
-        <div class="quick-actions"><button class="secondary" onclick="go('explorer')">Explorar archivos</button><button class="secondary" onclick="go('catalog')">Ver catálogo</button><button class="primary" onclick="go('new')">+ Nueva descarga</button></div>
+        <div class="quick-actions"><button class="secondary" onclick="syncAllResources()">↻ Sincronizar biblioteca</button><button class="secondary" onclick="go('explorer')">Explorar archivos</button><button class="secondary" onclick="go('catalog')">Ver catálogo</button><button class="primary" onclick="go('new')">+ Nueva descarga</button></div>
       </div>
       <div class="panel">
         <div class="panel-head"><div><h2>Actividad reciente</h2><p>Últimos enlaces agregados a la biblioteca.</p></div></div>
@@ -76,10 +76,11 @@
       <div class="toolbar">
         <input id="searchQ" placeholder="Buscar por nombre, categoría o enlace..." oninput="loadLibrary()" />
         <select id="filterCategory" onchange="loadLibrary()"><option value="">Todas las categorías</option></select>
-        <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="parcial">Descargado con aviso</option><option value="error">Con error</option></select>
+        <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="error">Con error</option></select>
         <select id="filterTag" onchange="loadLibrary()"><option value="">Todas las etiquetas</option></select>
+        <button class="secondary" onclick="clearLibraryFilters()">Limpiar filtros</button>
       </div>
-      <div class="notice library-note">Los avisos técnicos de Google Drive se mantienen en <strong>Detalles</strong>. Si existe contenido local, puedes abrirlo, reindexarlo y trabajar con él desde el Explorador.</div>
+      <div class="notice library-note neutral-note"><strong>Sincronización:</strong> si agregas, mueves o eliminas archivos manualmente desde Windows, usa “Sincronizar biblioteca” o “Reindexar” para actualizar conteos y vistas.</div>
       <div class="panel"><div id="libraryList"></div></div>
     </section>
 
@@ -104,6 +105,7 @@
         <input id="catalogSearch" placeholder="Buscar por nombre, etiqueta, SKU o recurso..." oninput="loadCatalog()" />
         <select id="catalogStatus" onchange="loadCatalog()"><option value="">Todos los estados</option><option value="seleccionado">Seleccionado</option><option value="preparacion">En preparación</option><option value="listo">Listo para catálogo</option><option value="publicado">Publicado</option></select>
         <select id="catalogType" onchange="loadCatalog()"><option value="">Todos los productos</option></select>
+        <button class="secondary" onclick="clearCatalogFilters()">Limpiar filtros</button>
         <button class="secondary" onclick="exportCatalog()">Exportar CSV</button>
       </div>
       <div class="panel catalog-intro"><div><h2>Catálogo de sublimación</h2><p class="muted">Aquí se guarda una copia del material seleccionado sin modificar los originales descargados.</p></div><div class="catalog-flow"><span>1 Selecciona diseño</span><b>→</b><span>2 Asigna producto</span><b>→</b><span>3 Prepara</span><b>→</b><span>4 Publica</span></div></div>
@@ -142,8 +144,17 @@ LISTOS PARA CATÁLOGO"></textarea></label>
           <div class="actions"><button class="primary" onclick="createFolderTemplate()">Guardar lista</button></div>
         </div>
       </div>
+      <div class="panel utility-apply-panel">
+        <div class="panel-head"><div><h2>Crear carpetas físicas desde una lista</h2><p>Aplica una lista guardada directamente a cualquier recurso, sin tener que navegar primero por el Explorador.</p></div></div>
+        <div class="utility-apply-grid">
+          <label>Recurso<select id="utilityResource"><option value="">Selecciona un recurso...</option></select></label>
+          <label>Lista de carpetas<select id="utilityTemplate"><option value="">Selecciona una lista...</option></select></label>
+          <label>Ruta interna opcional<input id="utilityParentPath" placeholder="Ej. SELECCIONADOS o dejar vacío para raíz"></label>
+          <div class="inline-action"><button class="primary" onclick="applyTemplateFromUtilities()">Crear carpetas físicas</button></div>
+        </div>
+      </div>
       <div class="panel">
-        <div class="panel-head"><div><h2>Listas de carpetas guardadas</h2><p>Aplica cualquiera desde el Explorador para crear carpetas físicas dentro de un recurso.</p></div></div>
+        <div class="panel-head"><div><h2>Listas de carpetas guardadas</h2><p>Puedes editarlas, eliminarlas o aplicarlas desde esta misma sección y desde el Explorador.</p></div></div>
         <div id="folderTemplates" class="template-grid"></div>
       </div>
     </section>
