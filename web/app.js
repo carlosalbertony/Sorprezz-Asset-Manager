@@ -359,18 +359,40 @@ async function explorerNewFolder(){if(!EXPLORER.rid)return toast('Selecciona un 
 async function explorerOpenCurrent(){if(!EXPLORER.rid)return;try{await api(`/api/resources/${EXPLORER.rid}/folder/open`,{method:'POST',body:JSON.stringify({path:EXPLORER.path})})}catch(e){toast(e.message)}}
 async function openExplorerFile(path){try{await api(`/api/resources/${EXPLORER.rid}/file/open`,{method:'POST',body:JSON.stringify({path})})}catch(e){toast(e.message)}}
 async function explorerRescan(){if(!EXPLORER.rid)return;const current=EXPLORER.path;try{const d=await api(`/api/resources/${EXPLORER.rid}/rescan`,{method:'POST'});toast(`Sincronizado: ${d.file_count} archivos`);await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}}
-async function chooseLocalFiles(){
-  try{
-    if(window.pywebview&&window.pywebview.api&&window.pywebview.api.choose_files){return await window.pywebview.api.choose_files()}
-  }catch(e){console.warn(e)}
-  toast('El selector de archivos está disponible en la aplicación instalada de Windows.');
-  return []
-}
-async function explorerImportFiles(){
+function explorerImportFiles(){
   if(!EXPLORER.rid)return toast('Selecciona un recurso');
-  const paths=await chooseLocalFiles();if(!paths||!paths.length)return;
+  const input=document.getElementById('localFilePicker');
+  if(!input)return toast('No se encontró el selector de archivos');
+  input.value='';
+  input.click();
+}
+function explorerImportFolder(){
+  if(!EXPLORER.rid)return toast('Selecciona un recurso');
+  const input=document.getElementById('localFolderPicker');
+  if(!input)return toast('No se encontró el selector de carpeta');
+  input.value='';
+  input.click();
+}
+async function handleLocalImport(input,isFolder=false){
+  if(!EXPLORER.rid||!input?.files?.length)return;
+  const files=[...input.files];
   const current=EXPLORER.path;
-  try{const d=await api(`/api/resources/${EXPLORER.rid}/files/import`,{method:'POST',body:JSON.stringify({paths,target_path:current})});toast(`${d.copied} archivos importados${d.skipped?` · ${d.skipped} omitidos`:''}`);await selectExplorerResource();await browseExplorer(current)}catch(e){toast(e.message)}
+  const fd=new FormData();
+  fd.append('target_path',current||'');
+  const rels=files.map(f=>isFolder?(f.webkitRelativePath||f.name):f.name);
+  fd.append('rel_paths_json',JSON.stringify(rels));
+  files.forEach(f=>fd.append('files',f,f.name));
+  toast(`Importando ${files.length} archivo${files.length===1?'':'s'}…`);
+  try{
+    const r=await fetch(`/api/resources/${EXPLORER.rid}/files/upload`,{method:'POST',body:fd});
+    let d={};try{d=await r.json()}catch{}
+    if(!r.ok)throw new Error(d.detail||'No se pudieron importar los archivos');
+    toast(`${d.copied} archivos importados${d.skipped?` · ${d.skipped} omitidos`:''}`);
+    await loadExplorerResources(EXPLORER.rid);
+    await browseExplorer(current);
+    await ensureTags();
+  }catch(e){toast(e.message||'No se pudieron importar los archivos')}
+  finally{input.value=''}
 }
 async function deleteExplorerSelected(){
   if(!EXPLORER.rid||!EXPLORER.selected.size)return;
@@ -467,7 +489,7 @@ async function loadGlobalAssets(){
 function globalKey(rid,path){return `${rid}::${path}`}
 function renderGlobalAssets(){
   const grid=document.getElementById('globalAssetsGrid');if(!grid)return;
-  if(!GLOBAL_ASSETS.length){grid.innerHTML='<div class="empty">No hay imágenes que coincidan con los filtros.</div>';return}
+  if(!GLOBAL_ASSETS.length){const tagId=document.getElementById('globalAssetTag')?.value||'',tagObj=TAGS.find(t=>String(t.id)===String(tagId));grid.innerHTML=`<div class="empty">${tagObj?`No hay imágenes visibles con <b>#${esc(tagObj.name)}</b>.<br><span class="muted">Si la etiqueta está aplicada solo al recurso o a una carpeta, edítala y activa “Aplicar también a las imágenes”.</span>`:'No hay imágenes que coincidan con los filtros.'}</div>`;return}
   grid.innerHTML=GLOBAL_ASSETS.map(a=>{const key=globalKey(a.resource_id,a.rel_path),checked=GLOBAL_SELECTED.has(key)?'checked':'',ep=encodeURIComponent(a.rel_path);return `<div class="asset-card file-asset global-asset"><label class="select-box"><input type="checkbox" ${checked} onchange="toggleGlobalSelection(${a.resource_id},decodeURIComponent('${ep}'),this.checked)"></label><div class="asset-preview"><img loading="lazy" src="/api/resources/${a.resource_id}/preview?path=${ep}" alt="${esc(a.name)}"></div><div class="asset-name">${esc(a.name)}</div><div class="asset-meta">${esc(a.resource_name)} · ${esc(a.category_name||'Sin categoría')}</div>${a.tags?.length?`<div class="chips file-tags">${a.tags.map(t=>`<span class="chip">#${esc(t.name)}</span>`).join('')}</div>`:''}<div class="asset-mini-actions"><button class="mini-link" onclick="openGlobalAsset(${a.resource_id},decodeURIComponent('${ep}'))">Abrir origen</button><button class="mini-link" onclick="exportSingleGlobalAsset(${a.resource_id},decodeURIComponent('${ep}'))">Descargar</button></div></div>`}).join('')
 }
 function toggleGlobalSelection(rid,path,checked){const key=globalKey(rid,path);if(checked)GLOBAL_SELECTED.set(key,{resource_id:rid,path});else GLOBAL_SELECTED.delete(key);updateGlobalSelectionBar()}
@@ -518,23 +540,32 @@ function setOrganizationTab(tab){
   if(current==='categories')loadCategories();else ensureTags().then(renderTagsManager);
 }
 async function loadUtilities(){await ensureTags();renderTagsManager()}
-function renderTagsManager(){const el=document.getElementById('tagsManager');if(!el)return;el.innerHTML=TAGS.length?TAGS.map(t=>`<div class="tag-row"><span class="chip strong">#${esc(t.name)}</span><span class="muted">${t.resources||0} recursos · ${t.folders||0} carpetas · ${t.files||0} archivos</span><button class="mini-link danger-text" onclick="deleteTag(${t.id})">Eliminar</button></div>`).join(''):'<div class="empty small">Todavía no hay etiquetas.</div>'}
+function renderTagsManager(){
+  const el=document.getElementById('tagsManager');if(!el)return;
+  if(!TAGS.length){el.innerHTML='<div class="empty small">Todavía no hay etiquetas.</div>';return}
+  el.innerHTML=TAGS.map(t=>{
+    const samples=(t.samples||[]).map(a=>{const ep=encodeURIComponent(a.rel_path);return `<button class="tag-preview" title="${esc(a.resource_name)} · ${esc(a.rel_path)}" onclick="showTagImages(${t.id})"><img loading="lazy" src="/api/resources/${a.resource_id}/preview?path=${ep}" alt=""></button>`}).join('');
+    return `<div class="tag-card"><div class="tag-card-head"><span class="chip strong">#${esc(t.name)}</span><span class="muted">${t.resources||0} recursos · ${t.folders||0} carpetas · <b>${t.files||0} imágenes/archivos</b></span></div><div class="tag-card-body">${samples?`<div class="tag-previews">${samples}</div>`:`<div class="tag-no-preview">Sin imágenes etiquetadas visibles</div>`}<div class="tag-row-actions"><button class="secondary compact-btn" onclick="showTagImages(${t.id})">Ver imágenes</button><button class="mini-link danger-text" onclick="deleteTag(${t.id})">Eliminar</button></div></div></div>`
+  }).join('');
+}
+async function showTagImages(tagId){go('library');setLibraryMode('images');await loadLibraryAssets();const sel=document.getElementById('globalAssetTag');if(sel){sel.value=String(tagId);await loadGlobalAssets()}}
 async function createTag(){const i=document.getElementById('newTagName');const name=i.value.trim();if(!name)return;try{await api('/api/tags',{method:'POST',body:JSON.stringify({name})});i.value='';await loadUtilities();await loadDownloadsSetup();toast('Etiqueta creada')}catch(e){toast(e.message)}}
 async function deleteTag(id){if(!confirm('¿Eliminar esta etiqueta? Se quitará de los recursos y carpetas donde esté asignada.'))return;try{await api(`/api/tags/${id}`,{method:'DELETE'});await loadUtilities();toast('Etiqueta eliminada')}catch(e){toast(e.message)}}
 function tagChecklist(selected=[]){const set=new Set(selected.map(Number));return TAGS.length?`<div class="tag-checklist">${TAGS.map(t=>`<label><input type="checkbox" value="${t.id}" ${set.has(t.id)?'checked':''}> <span>#${esc(t.name)}</span></label>`).join('')}</div>`:'<p class="muted">Primero crea etiquetas en “Organización”.</p>'}
 async function openResourceTagEditor(){if(!EXPLORER.rid)return toast('Selecciona un recurso');return openResourceTagEditorFor(EXPLORER.rid)}
-async function openResourceTagEditorFor(rid){await ensureTags();try{const current=await api(`/api/resources/${rid}/tags`);document.getElementById('modalContent').innerHTML=`<h2>Etiquetas del recurso</h2><p class="muted">Marca una o varias etiquetas para encontrar esta carpeta más rápido.</p>${tagChecklist(current.map(x=>x.id))}<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveResourceTagsFor(${rid})">Guardar etiquetas</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
+async function openResourceTagEditorFor(rid){await ensureTags();try{const current=await api(`/api/resources/${rid}/tags`);document.getElementById('modalContent').innerHTML=`<h2>Etiquetas del recurso</h2><p class="muted">La etiqueta del recurso sirve para clasificar la carpeta completa. Si también quieres encontrar sus imágenes por esa etiqueta, activa la opción inferior.</p>${tagChecklist(current.map(x=>x.id))}<label class="apply-tags-option"><input id="applyResourceTagsToImages" type="checkbox"> <span><b>Aplicar también a todas las imágenes del recurso</b><small>Las miniaturas aparecerán al buscar esta etiqueta en Biblioteca.</small></span></label><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveResourceTagsFor(${rid})">Guardar etiquetas</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
 async function saveResourceTags(){if(!EXPLORER.rid)return;return saveResourceTagsFor(EXPLORER.rid)}
-async function saveResourceTagsFor(rid){const ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value));try{await api(`/api/resources/${rid}/tags`,{method:'PUT',body:JSON.stringify({tag_ids:ids})});closeModal();toast('Etiquetas guardadas');if(EXPLORER.rid===rid)await loadExplorerResources(rid);const active=document.querySelector('.page.active')?.id;if(active==='page-library')loadLibrary();if(active==='page-dashboard')loadDashboard()}catch(e){toast(e.message)}}
+async function saveResourceTagsFor(rid){const ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value)),apply=!!document.getElementById('applyResourceTagsToImages')?.checked;try{await api(`/api/resources/${rid}/tags`,{method:'PUT',body:JSON.stringify({tag_ids:ids})});let applied=0;if(apply&&ids.length){const d=await api(`/api/resources/${rid}/tags/apply-to-files`,{method:'POST',body:JSON.stringify({path:'',tag_ids:ids,mode:'add',images_only:true})});applied=d.files||0}closeModal();await ensureTags(true);toast(apply?`Etiquetas guardadas · ${applied} imágenes etiquetadas`:'Etiquetas guardadas');if(EXPLORER.rid===rid)await loadExplorerResources(rid);const active=document.querySelector('.page.active')?.id;if(active==='page-library'){if(LIBRARY_MODE==='images')await loadLibraryAssets();else loadLibrary()}if(active==='page-dashboard')loadDashboard()}catch(e){toast(e.message)}}
 async function openCurrentFolderTagEditor(){if(!EXPLORER.rid)return toast('Selecciona un recurso');return openFolderTagEditor(EXPLORER.path)}
-async function openFolderTagEditor(path=''){if(!EXPLORER.rid)return toast('Selecciona un recurso');await ensureTags();try{const current=await api(`/api/resources/${EXPLORER.rid}/folder-tags?path=${encodeURIComponent(path)}`);const label=path||'Raíz del recurso';document.getElementById('modalContent').innerHTML=`<h2>Etiquetas de carpeta</h2><p class="muted">Carpeta: <b>${esc(label)}</b></p>${tagChecklist(current.map(x=>x.id))}<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveFolderTagsFor(decodeURIComponent('${encodeURIComponent(path)}'))">Guardar etiquetas</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
+async function openFolderTagEditor(path=''){if(!EXPLORER.rid)return toast('Selecciona un recurso');await ensureTags();try{const current=await api(`/api/resources/${EXPLORER.rid}/folder-tags?path=${encodeURIComponent(path)}`);const label=path||'Raíz del recurso';document.getElementById('modalContent').innerHTML=`<h2>Etiquetas de carpeta</h2><p class="muted">Carpeta: <b>${esc(label)}</b>. Puedes etiquetar solo la carpeta o también todas las imágenes que contiene.</p>${tagChecklist(current.map(x=>x.id))}<label class="apply-tags-option"><input id="applyFolderTagsToImages" type="checkbox"> <span><b>Aplicar también a las imágenes de esta carpeta y subcarpetas</b><small>Así aparecerán al filtrar por esta etiqueta en Biblioteca.</small></span></label><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="saveFolderTagsFor(decodeURIComponent('${encodeURIComponent(path)}'))">Guardar etiquetas</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
 async function saveCurrentFolderTags(){return saveFolderTagsFor(EXPLORER.path)}
-async function saveFolderTagsFor(path=''){const ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value));try{await api(`/api/resources/${EXPLORER.rid}/folder-tags`,{method:'PUT',body:JSON.stringify({path,tag_ids:ids})});closeModal();toast('Etiquetas de carpeta guardadas');await browseExplorer(EXPLORER.path)}catch(e){toast(e.message)}}
+async function saveFolderTagsFor(path=''){const ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value)),apply=!!document.getElementById('applyFolderTagsToImages')?.checked;try{await api(`/api/resources/${EXPLORER.rid}/folder-tags`,{method:'PUT',body:JSON.stringify({path,tag_ids:ids})});let applied=0;if(apply&&ids.length){const d=await api(`/api/resources/${EXPLORER.rid}/tags/apply-to-files`,{method:'POST',body:JSON.stringify({path,tag_ids:ids,mode:'add',images_only:true})});applied=d.files||0}closeModal();await ensureTags(true);toast(apply?`Etiquetas guardadas · ${applied} imágenes etiquetadas`:'Etiquetas de carpeta guardadas');await browseExplorer(EXPLORER.path)}catch(e){toast(e.message)}}
 function clearLibraryFilters(){document.getElementById('searchQ').value='';document.getElementById('filterCategory').value='';document.getElementById('filterStatus').value='';if(document.getElementById('filterTag'))document.getElementById('filterTag').value='';loadLibrary()}
 async function syncAllResources(){
   try{
     const d=await api('/api/resources/rescan-all',{method:'POST'});
-    toast(`Biblioteca sincronizada: ${d.resources} recursos · ${d.files} archivos`);
+    const tagMsg=d.tags_preserved===false?' · ⚠ revisa las etiquetas':' · etiquetas conservadas';
+    toast(`Biblioteca sincronizada: ${d.resources} recursos · ${d.files} archivos${tagMsg}`);
     const active=document.querySelector('.page.active')?.id;
     if(active==='page-dashboard')loadDashboard();
     if(active==='page-library'){

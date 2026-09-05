@@ -89,3 +89,22 @@
 .explorer-buttons{flex-wrap:wrap}
 .selection-bar .danger{background:#fff0f0;color:#a92d2d;border:1px solid #f0c7c7}
 @media (max-width:1100px){.header-actions .compact-sync{display:none}.manual-sync-note{align-items:flex-start;flex-direction:column}}
+
+/* V1.7.1 · etiquetas persistentes y navegación por etiqueta */
+.apply-tags-option{display:flex;gap:10px;align-items:flex-start;margin:10px 0 18px;padding:12px 14px;border:1px solid #e2dced;background:#faf8fd;border-radius:11px;cursor:pointer}
+.apply-tags-option input{width:auto;margin-top:3px}.apply-tags-option span{display:grid;gap:3px}.apply-tags-option small{color:var(--muted);font-weight:400;line-height:1.35}
+.tag-row-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+.tag-row{grid-template-columns:auto minmax(0,1fr) auto}
+
+/* V1.8 - etiquetas visuales e importación local */
+.tag-manager{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:16px}
+.tag-card{border:1px solid var(--line);border-radius:14px;background:#fff;padding:13px;min-width:0}
+.tag-card-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:10px}
+.tag-card-head .muted{margin:0;font-size:12px}
+.tag-card-body{display:flex;align-items:center;gap:10px;justify-content:space-between}
+.tag-previews{display:flex;gap:6px;min-width:0;overflow:hidden}
+.tag-preview{width:54px;height:54px;border:1px solid var(--line);border-radius:9px;background:#f7f5fa;padding:2px;overflow:hidden;cursor:pointer;flex:0 0 auto}
+.tag-preview img{width:100%;height:100%;object-fit:cover;border-radius:6px;display:block}
+.tag-no-preview{font-size:12px;color:var(--muted);padding:8px 0}
+.tag-card .tag-row-actions{margin-left:auto;flex:0 0 auto}
+@media(max-width:780px){.tag-manager{grid-template-columns:1fr}.tag-card-body{align-items:flex-start;flex-direction:column}.tag-card .tag-row-actions{margin-left:0}}

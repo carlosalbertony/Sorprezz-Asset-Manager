@@ -23,7 +23,7 @@
     </nav>
     <div class="sidebar-bottom">
       <button class="sidebar-sync" onclick="syncAllResources()">↻ <span>Sincronizar todo</span></button>
-      <div class="version">Versión 1.7.0</div>
+      <div class="version">Versión 1.8.0</div>
     </div>
   </aside>
 
@@ -221,6 +221,7 @@
           </div>
           <div class="explorer-buttons">
             <button class="primary" onclick="explorerImportFiles()">+ Importar archivos</button>
+            <button class="secondary" onclick="explorerImportFolder()">+ Importar carpeta</button>
             <button class="secondary" onclick="explorerNewFolder()">+ Nueva carpeta</button>
             <button class="secondary" onclick="openResourceMetadataEditor()">Editar clasificación</button>
             <button class="secondary" onclick="openResourceTagEditor()">🏷 Etiquetar recurso</button>
@@ -282,7 +283,7 @@
         <div class="panel"><h2>Estructura actual</h2><div id="categoryTree" class="category-tree"></div></div>
       </div>
       <div id="orgTags" class="hidden">
-        <div class="panel"><h2>Etiquetas</h2><p class="muted">Clasifican recursos, carpetas e imágenes sin moverlas. Sirven para buscar y reunir material en colecciones.</p><div class="row"><input id="newTagName" placeholder="Nombre de la etiqueta"><button class="primary" onclick="createTag()">Crear etiqueta</button></div><div id="tagsManager" class="tag-manager"></div></div>
+        <div class="panel"><h2>Etiquetas</h2><p class="muted">Clasifican recursos, carpetas e imágenes sin moverlas. Cada etiqueta muestra cuántas imágenes tiene y una vista previa para encontrarlas rápidamente.</p><div class="row"><input id="newTagName" placeholder="Nombre de la etiqueta"><button class="primary" onclick="createTag()">Crear etiqueta</button></div><div id="tagsManager" class="tag-manager"></div></div>
       </div>
     </section>
 
@@ -300,7 +301,7 @@
           <div>＋ <b>Agregar material</b><span>Desde Google Drive o creando una carpeta manual.</span></div>
           <div>🖼️ <b>Biblioteca visual</b><span>Busca y visualiza PNG, JPG, WEBP, GIF, BMP y SVG.</span></div>
           <div>📁 <b>Gestión de carpetas</b><span>Crea, renombra, abre en Windows, copia, mueve y elimina.</span></div>
-          <div>⬆ <b>Importación local</b><span>Copia archivos de tu computadora a cualquier carpeta de Biblioteca.</span></div>
+          <div>⬆ <b>Importación local</b><span>Copia archivos o carpetas completas desde tu computadora a cualquier ubicación de Biblioteca.</span></div>
           <div>🏷 <b>Etiquetas y categorías</b><span>Clasifica recursos, carpetas e imágenes.</span></div>
           <div>▣ <b>Colecciones</b><span>Agrupa copias de imágenes de distintos recursos.</span></div>
           <div>↓ <b>Exportación</b><span>Descarga copias y ZIP de selecciones.</span></div>
@@ -310,6 +311,9 @@
     </section>
   </main>
 </div>
+
+<input id="localFilePicker" class="hidden" type="file" multiple onchange="handleLocalImport(this,false)" />
+<input id="localFolderPicker" class="hidden" type="file" multiple webkitdirectory directory onchange="handleLocalImport(this,true)" />
 
 <div id="modal" class="modal hidden"><div class="modal-card"><button class="modal-x" onclick="closeModal()">×</button><div id="modalContent"></div></div></div>
 <div id="toast" class="toast hidden"></div>
