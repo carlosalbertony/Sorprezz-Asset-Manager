@@ -61,3 +61,11 @@ El instalador resultante aparecerá en:
 
 NOTA SOBRE GOOGLE DRIVE
 V1.1 utiliza gdown para enlaces compartidos. La futura V2 deberá integrar OAuth oficial de Google Drive para carpetas privadas, mejor manejo de límites y descargas más robustas.
+
+CAMBIOS V1.2.0
+- Corrige falsos estados "Con error" cuando Google Drive sí dejó archivos descargados.
+- La app ahora indexa siempre el contenido local aunque gdown termine con una excepción.
+- Nuevo estado "Descargado con aviso" para carpetas utilizables con posibles archivos pendientes.
+- Al abrir la V1.2 se reparan automáticamente registros antiguos con 0 archivos si su carpeta local contiene material.
+- "Abrir carpeta" reindexa automáticamente el contenido para mantener conteo y tamaño sincronizados.
+- Reintentar descarga conserva e indexa lo que ya existe.

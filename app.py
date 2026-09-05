@@ -23,7 +23,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -212,12 +212,54 @@ def index_resource(rid: int, path: Path) -> tuple[int, int]:
     return count, total
 
 
+def repair_existing_downloads() -> int:
+    """Reindexa descargas locales que sí existen aunque una versión anterior las marcara con error.
+
+    Esto corrige el caso en que Google Drive/gdown logra descargar parte o todo el contenido y
+    luego lanza una excepción al encontrar un archivo no público. En versiones anteriores ese
+    recurso quedaba en 0 archivos aunque la carpeta local tuviera contenido.
+    """
+    repaired = 0
+    with db() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT id, status, local_path, error FROM resources WHERE local_path IS NOT NULL AND local_path <> ''"
+        )]
+    for r in rows:
+        path = Path(r["local_path"])
+        if not path.exists():
+            continue
+        try:
+            count, total = index_resource(r["id"], path)
+        except Exception:
+            continue
+        if count <= 0:
+            continue
+        # Si antes constaba como error, no afirmamos que Drive entregó absolutamente todo:
+        # lo dejamos como descargado con aviso. Los recursos sanos permanecen completados.
+        if r["status"] == "error":
+            with db() as con:
+                con.execute(
+                    "UPDATE resources SET status='parcial', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    (count, total, now_iso(), r["id"]),
+                )
+            repaired += 1
+        elif r["status"] in ("pendiente", "descargando"):
+            with db() as con:
+                con.execute(
+                    "UPDATE resources SET status='completado', error=NULL, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    (count, total, now_iso(), r["id"]),
+                )
+            repaired += 1
+    return repaired
+
+
 def download_worker(rid: int) -> None:
     resource = get_resource(rid)
     if not resource:
         return
     with active_lock:
         active_downloads[rid] = {"progress": 5, "message": "Preparando descarga..."}
+
     try:
         info = extract_drive_info(resource["url"])
         cat = slug_folder(resource.get("category_name") or "Sin_categoria")
@@ -225,62 +267,132 @@ def download_worker(rid: int) -> None:
         name = slug_folder(resource["name"])
         dest = library_root() / "Biblioteca" / cat / sub / name
         dest.mkdir(parents=True, exist_ok=True)
+
         with db() as con:
             con.execute(
                 "UPDATE resources SET status='descargando', local_path=?, error=NULL, updated_at=? WHERE id=?",
                 (str(dest), now_iso(), rid),
             )
+
         with active_lock:
             active_downloads[rid] = {"progress": 12, "message": "Conectando con Google Drive..."}
 
         try:
-            import gdown  # installed by installer
+            import gdown
         except ImportError as e:
-            raise RuntimeError("Falta el componente de descarga de Google Drive. Reinstala Sorprezz Asset Manager.") from e
+            raise RuntimeError(
+                "Falta el componente de descarga de Google Drive. Reinstala Sorprezz Asset Manager."
+            ) from e
 
-        before = {str(p) for p in dest.rglob("*") if p.is_file()}
-        if info["kind"] == "folder":
-            with active_lock:
-                active_downloads[rid] = {"progress": 25, "message": "Descargando carpeta y subcarpetas..."}
-            result = gdown.download_folder(
-                url=resource["url"],
-                output=str(dest),
-                quiet=True,
-                use_cookies=False,
-                remaining_ok=True,
-            )
-            # gdown may return None for some failures
-            if result is None and not any(dest.rglob("*")):
-                raise RuntimeError("Google Drive no permitió descargar la carpeta. Verifica que el enlace esté compartido para lectura.")
-        else:
-            with active_lock:
-                active_downloads[rid] = {"progress": 25, "message": "Descargando archivo..."}
-            result = gdown.download(resource["url"], output=str(dest) + os.sep, quiet=True, fuzzy=True, use_cookies=False)
-            if not result:
-                raise RuntimeError("No se pudo descargar el archivo desde el enlace proporcionado.")
+        download_warning = None
+        before_files = {str(p) for p in dest.rglob("*") if p.is_file()}
+
+        # IMPORTANTE: gdown puede descargar muchos archivos y después lanzar una excepción
+        # por un único elemento sin enlace público. No descartamos lo ya descargado.
+        try:
+            if info["kind"] == "folder":
+                with active_lock:
+                    active_downloads[rid] = {"progress": 25, "message": "Descargando carpeta y subcarpetas..."}
+                result = gdown.download_folder(
+                    url=resource["url"],
+                    output=str(dest),
+                    quiet=True,
+                    use_cookies=False,
+                    remaining_ok=True,
+                )
+                if result is None and not any(dest.rglob("*")):
+                    raise RuntimeError(
+                        "Google Drive no permitió descargar la carpeta. Verifica que el enlace esté compartido para lectura."
+                    )
+            else:
+                with active_lock:
+                    active_downloads[rid] = {"progress": 25, "message": "Descargando archivo..."}
+                result = gdown.download(
+                    resource["url"],
+                    output=str(dest) + os.sep,
+                    quiet=True,
+                    fuzzy=True,
+                    use_cookies=False,
+                )
+                if not result:
+                    raise RuntimeError("No se pudo descargar el archivo desde el enlace proporcionado.")
+        except Exception as e:
+            download_warning = str(e)
 
         with active_lock:
-            active_downloads[rid] = {"progress": 85, "message": "Indexando archivos..."}
+            active_downloads[rid] = {"progress": 86, "message": "Verificando e indexando archivos locales..."}
+
+        # Siempre indexamos el destino, incluso si Drive/gdown reportó una excepción.
         count, total = index_resource(rid, dest)
-        after = {str(p) for p in dest.rglob("*") if p.is_file()}
-        if count == 0 and not (after - before):
-            raise RuntimeError("La descarga terminó sin archivos. Revisa los permisos del enlace.")
-        with db() as con:
-            con.execute(
-                "UPDATE resources SET status='completado', error=NULL, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
-                (count, total, now_iso(), rid),
+        after_files = {str(p) for p in dest.rglob("*") if p.is_file()}
+
+        if count <= 0:
+            if download_warning:
+                raise RuntimeError(download_warning)
+            if not (after_files - before_files):
+                raise RuntimeError("La descarga terminó sin archivos. Revisa los permisos del enlace.")
+
+        if download_warning:
+            status = "parcial"
+            friendly_warning = (
+                f"Se descargaron e indexaron {count} archivos, pero Google Drive reportó un aviso: "
+                f"{download_warning}"
             )
-        with active_lock:
-            active_downloads[rid] = {"progress": 100, "message": f"Completado: {count} archivos"}
+            with db() as con:
+                con.execute(
+                    "UPDATE resources SET status=?, error=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    (status, friendly_warning, count, total, now_iso(), rid),
+                )
+            with active_lock:
+                active_downloads[rid] = {
+                    "progress": 100,
+                    "message": f"Descargado con aviso: {count} archivos · revisa el contenido local",
+                    "warning": True,
+                }
+        else:
+            with db() as con:
+                con.execute(
+                    "UPDATE resources SET status='completado', error=NULL, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    (count, total, now_iso(), rid),
+                )
+            with active_lock:
+                active_downloads[rid] = {"progress": 100, "message": f"Completado: {count} archivos"}
+
         time.sleep(1)
+
     except Exception as e:
-        with db() as con:
-            con.execute(
-                "UPDATE resources SET status='error', error=?, updated_at=? WHERE id=?",
-                (str(e), now_iso(), rid),
-            )
-        with active_lock:
-            active_downloads[rid] = {"progress": 0, "message": str(e), "error": True}
+        # Última oportunidad: si hay contenido local, lo indexamos y evitamos el falso 0 archivos.
+        current = get_resource(rid)
+        local_path = current.get("local_path") if current else None
+        recovered = False
+        if local_path:
+            path = Path(local_path)
+            if path.exists():
+                try:
+                    count, total = index_resource(rid, path)
+                    if count > 0:
+                        with db() as con:
+                            con.execute(
+                                "UPDATE resources SET status='parcial', error=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                                (f"La descarga dejó contenido utilizable, pero terminó con un aviso: {e}", count, total, now_iso(), rid),
+                            )
+                        with active_lock:
+                            active_downloads[rid] = {
+                                "progress": 100,
+                                "message": f"Descargado con aviso: {count} archivos encontrados",
+                                "warning": True,
+                            }
+                        recovered = True
+                except Exception:
+                    pass
+        if not recovered:
+            with db() as con:
+                con.execute(
+                    "UPDATE resources SET status='error', error=?, updated_at=? WHERE id=?",
+                    (str(e), now_iso(), rid),
+                )
+            with active_lock:
+                active_downloads[rid] = {"progress": 0, "message": str(e), "error": True}
     finally:
         time.sleep(2)
         with active_lock:
@@ -311,6 +423,7 @@ class ConfigIn(BaseModel):
 def startup():
     init_db()
     load_config()
+    repair_existing_downloads()
 
 
 @app.get("/")
@@ -488,7 +601,14 @@ def resource_rescan(rid: int):
     if not path.exists():
         raise HTTPException(404, "La carpeta local ya no existe")
     count, total = index_resource(rid, path)
-    return {"ok": True, "file_count": count, "total_bytes": total}
+    if count > 0:
+        new_status = "parcial" if r.get("status") == "error" and r.get("error") else (r.get("status") if r.get("status") == "parcial" else "completado")
+        with db() as con:
+            con.execute(
+                "UPDATE resources SET status=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                (new_status, count, total, now_iso(), rid),
+            )
+    return {"ok": True, "file_count": count, "total_bytes": total, "status": (new_status if count > 0 else r.get("status"))}
 
 
 @app.post("/api/resources/{rid}/open")
@@ -499,6 +619,17 @@ def resource_open(rid: int):
     p = Path(r["local_path"])
     if not p.exists():
         raise HTTPException(404, "La carpeta ya no existe")
+    # Mantiene sincronizados conteo/tamaño aunque una descarga anterior haya terminado con aviso.
+    try:
+        count, total = index_resource(rid, p)
+        if count > 0 and r.get("status") == "error":
+            with db() as con:
+                con.execute(
+                    "UPDATE resources SET status='parcial', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    (count, total, now_iso(), rid),
+                )
+    except Exception:
+        pass
     try:
         if sys.platform.startswith("win"):
             os.startfile(str(p))  # type: ignore[attr-defined]
@@ -545,7 +676,7 @@ def resource_delete(rid: int, delete_files: bool = False):
 def stats():
     with db() as con:
         total = con.execute("SELECT COUNT(*) c FROM resources").fetchone()["c"]
-        completed = con.execute("SELECT COUNT(*) c FROM resources WHERE status='completado'").fetchone()["c"]
+        completed = con.execute("SELECT COUNT(*) c FROM resources WHERE status IN ('completado','parcial')").fetchone()["c"]
         pending = con.execute("SELECT COUNT(*) c FROM resources WHERE status IN ('pendiente','descargando')").fetchone()["c"]
         errors = con.execute("SELECT COUNT(*) c FROM resources WHERE status='error'").fetchone()["c"]
         files = con.execute("SELECT COALESCE(SUM(file_count),0) c FROM resources").fetchone()["c"]
