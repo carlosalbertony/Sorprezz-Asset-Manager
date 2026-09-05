@@ -20,7 +20,7 @@
       <button class="nav" data-page="categories">⌘ <span>Categorías</span></button>
       <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
     </nav>
-    <div class="version">Versión 1.1</div>
+    <div class="version">Versión 1.2</div>
   </aside>
 
   <main>
@@ -75,8 +75,9 @@
       <div class="toolbar">
         <input id="searchQ" placeholder="Buscar por nombre, categoría o enlace..." oninput="loadLibrary()" />
         <select id="filterCategory" onchange="loadLibrary()"><option value="">Todas las categorías</option></select>
-        <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="error">Con error</option></select>
+        <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="parcial">Descargado con aviso</option><option value="error">Con error</option></select>
       </div>
+      <div class="notice library-note">Si una carpeta muestra <strong>Descargado con aviso</strong>, significa que hay archivos locales utilizables, pero Google Drive reportó que algún elemento no pudo leerse. Puedes abrirla, reindexarla o reintentar.</div>
       <div class="panel"><div id="libraryList"></div></div>
     </section>
 
