@@ -1,0 +1,4 @@
+-r requirements.txt
+pywebview>=5.3,<6
+pythonnet>=3.0,<4; platform_system == "Windows"
+pyinstaller>=6.10,<7

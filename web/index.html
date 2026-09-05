@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sorprezz Asset Manager</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">S</div>
+      <div><strong>Sorprezz</strong><span>Asset Manager</span></div>
+    </div>
+    <nav>
+      <button class="nav active" data-page="dashboard">⌂ <span>Inicio</span></button>
+      <button class="nav" data-page="new">＋ <span>Nueva descarga</span></button>
+      <button class="nav" data-page="library">▦ <span>Biblioteca</span></button>
+      <button class="nav" data-page="categories">⌘ <span>Categorías</span></button>
+      <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
+    </nav>
+    <div class="version">Versión 1.1</div>
+  </aside>
+
+  <main>
+    <header>
+      <div>
+        <h1 id="pageTitle">Inicio</h1>
+        <p id="pageSubtitle">Organiza tus recursos de Sorprezz desde un solo lugar.</p>
+      </div>
+      <div id="serverDot" class="server-dot" title="Aplicación local activa"></div>
+    </header>
+
+    <section id="page-dashboard" class="page active">
+      <div class="stats" id="stats"></div>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Actividad reciente</h2><p>Últimos enlaces agregados a la biblioteca.</p></div><button class="primary" onclick="go('new')">+ Nueva descarga</button></div>
+        <div id="recentResources"></div>
+      </div>
+    </section>
+
+    <section id="page-new" class="page">
+      <div class="panel form-panel">
+        <h2>Agregar enlace</h2>
+        <p class="muted">Pega un enlace compartido de Google Drive, clasifícalo y agrégalo a la cola.</p>
+        <div class="form-grid">
+          <label class="wide">Enlace de Google Drive
+            <input id="rUrl" placeholder="https://drive.google.com/drive/folders/..." />
+          </label>
+          <label>Nombre de la carpeta
+            <input id="rName" placeholder="Ej. Stitch" />
+          </label>
+          <label>Categoría
+            <select id="rCategory"></select>
+          </label>
+          <label>Subcategoría
+            <select id="rSubcategory"></select>
+          </label>
+          <div class="inline-action"><button class="secondary" onclick="quickSubcategory()">+ Crear subcategoría</button></div>
+        </div>
+        <div id="analyzeBox" class="notice hidden"></div>
+        <div class="actions">
+          <button class="secondary" onclick="analyzeLink()">Analizar enlace</button>
+          <button class="primary" onclick="saveAndDownload()">Guardar y descargar</button>
+        </div>
+      </div>
+      <div class="panel tip">
+        <strong>Cómo funciona</strong>
+        <ol><li>Pega el enlace.</li><li>Elige categoría y subcategoría.</li><li>La app crea la estructura de carpetas.</li><li>Descarga el contenido y conserva sus subcarpetas.</li><li>Al finalizar indexa los tipos de archivo automáticamente.</li></ol>
+      </div>
+    </section>
+
+    <section id="page-library" class="page">
+      <div class="toolbar">
+        <input id="searchQ" placeholder="Buscar por nombre, categoría o enlace..." oninput="loadLibrary()" />
+        <select id="filterCategory" onchange="loadLibrary()"><option value="">Todas las categorías</option></select>
+        <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="error">Con error</option></select>
+      </div>
+      <div class="panel"><div id="libraryList"></div></div>
+    </section>
+
+    <section id="page-categories" class="page">
+      <div class="two-col">
+        <div class="panel">
+          <h2>Nueva categoría</h2>
+          <div class="row"><input id="newCategoryName" placeholder="Nombre de categoría" /><button class="primary" onclick="createCategory()">Crear</button></div>
+        </div>
+        <div class="panel">
+          <h2>Nueva subcategoría</h2>
+          <select id="subCatParent"></select>
+          <div class="row"><input id="newSubcategoryName" placeholder="Ej. Disney" /><button class="primary" onclick="createSubcategory()">Crear</button></div>
+        </div>
+      </div>
+      <div class="panel"><h2>Estructura actual</h2><div id="categoryTree" class="category-tree"></div></div>
+    </section>
+
+    <section id="page-settings" class="page">
+      <div class="panel form-panel">
+        <h2>Almacenamiento</h2>
+        <p class="muted">Aquí se guardarán Biblioteca, Catálogo Sorprezz, Exportaciones y Temporales.</p>
+        <label>Carpeta principal
+          <div class="storage-picker"><input id="libraryPath" /><button type="button" class="secondary" onclick="chooseLibraryFolder()">Elegir carpeta…</button></div>
+        </label>
+        <div class="actions"><button class="primary" onclick="saveSettings()">Guardar ubicación</button></div>
+        <div id="configMeta" class="config-meta"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal" class="modal hidden"><div class="modal-card"><button class="modal-x" onclick="closeModal()">×</button><div id="modalContent"></div></div></div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
