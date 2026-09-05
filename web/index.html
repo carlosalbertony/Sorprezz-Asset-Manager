@@ -17,10 +17,13 @@
       <button class="nav active" data-page="dashboard">⌂ <span>Inicio</span></button>
       <button class="nav" data-page="new">＋ <span>Nueva descarga</span></button>
       <button class="nav" data-page="library">▦ <span>Biblioteca</span></button>
+      <button class="nav" data-page="explorer">▤ <span>Explorador</span></button>
+      <button class="nav" data-page="catalog">◆ <span>Catálogo</span></button>
       <button class="nav" data-page="categories">⌘ <span>Categorías</span></button>
+      <button class="nav" data-page="utilities">🏷 <span>Etiquetas y listas</span></button>
       <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
     </nav>
-    <div class="version">Versión 1.2</div>
+    <div class="version">Versión 1.4</div>
   </aside>
 
   <main>
@@ -34,8 +37,12 @@
 
     <section id="page-dashboard" class="page active">
       <div class="stats" id="stats"></div>
+      <div class="panel quick-tools">
+        <div><h2>Herramientas rápidas</h2><p class="muted">Explora diseños, crea carpetas y prepara material para el catálogo de sublimación.</p></div>
+        <div class="quick-actions"><button class="secondary" onclick="go('explorer')">Explorar archivos</button><button class="secondary" onclick="go('catalog')">Ver catálogo</button><button class="primary" onclick="go('new')">+ Nueva descarga</button></div>
+      </div>
       <div class="panel">
-        <div class="panel-head"><div><h2>Actividad reciente</h2><p>Últimos enlaces agregados a la biblioteca.</p></div><button class="primary" onclick="go('new')">+ Nueva descarga</button></div>
+        <div class="panel-head"><div><h2>Actividad reciente</h2><p>Últimos enlaces agregados a la biblioteca.</p></div></div>
         <div id="recentResources"></div>
       </div>
     </section>
@@ -43,7 +50,7 @@
     <section id="page-new" class="page">
       <div class="panel form-panel">
         <h2>Agregar enlace</h2>
-        <p class="muted">Pega un enlace compartido de Google Drive, clasifícalo y agrégalo a la cola.</p>
+        <p class="muted">Pega un enlace compartido de Google Drive, clasifícalo y agrégalo a la biblioteca.</p>
         <div class="form-grid">
           <label class="wide">Enlace de Google Drive
             <input id="rUrl" placeholder="https://drive.google.com/drive/folders/..." />
@@ -60,15 +67,9 @@
           <div class="inline-action"><button class="secondary" onclick="quickSubcategory()">+ Crear subcategoría</button></div>
         </div>
         <div id="analyzeBox" class="notice hidden"></div>
-        <div class="actions">
-          <button class="secondary" onclick="analyzeLink()">Analizar enlace</button>
-          <button class="primary" onclick="saveAndDownload()">Guardar y descargar</button>
-        </div>
+        <div class="actions"><button class="secondary" onclick="analyzeLink()">Analizar enlace</button><button class="primary" onclick="saveAndDownload()">Guardar y descargar</button></div>
       </div>
-      <div class="panel tip">
-        <strong>Cómo funciona</strong>
-        <ol><li>Pega el enlace.</li><li>Elige categoría y subcategoría.</li><li>La app crea la estructura de carpetas.</li><li>Descarga el contenido y conserva sus subcarpetas.</li><li>Al finalizar indexa los tipos de archivo automáticamente.</li></ol>
-      </div>
+      <div class="panel tip"><strong>Flujo recomendado</strong><ol><li>Descarga una carpeta.</li><li>Revísala desde <b>Explorador</b>.</li><li>Crea subcarpetas de trabajo si las necesitas.</li><li>Selecciona imágenes y agrégalas al <b>Catálogo</b>.</li><li>Usa el catálogo para preparar los productos que se publicarán en Sorprezz.</li></ol></div>
     </section>
 
     <section id="page-library" class="page">
@@ -76,36 +77,84 @@
         <input id="searchQ" placeholder="Buscar por nombre, categoría o enlace..." oninput="loadLibrary()" />
         <select id="filterCategory" onchange="loadLibrary()"><option value="">Todas las categorías</option></select>
         <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="parcial">Descargado con aviso</option><option value="error">Con error</option></select>
+        <select id="filterTag" onchange="loadLibrary()"><option value="">Todas las etiquetas</option></select>
       </div>
-      <div class="notice library-note">Si una carpeta muestra <strong>Descargado con aviso</strong>, significa que hay archivos locales utilizables, pero Google Drive reportó que algún elemento no pudo leerse. Puedes abrirla, reindexarla o reintentar.</div>
+      <div class="notice library-note">Los avisos técnicos de Google Drive se mantienen en <strong>Detalles</strong>. Si existe contenido local, puedes abrirlo, reindexarlo y trabajar con él desde el Explorador.</div>
       <div class="panel"><div id="libraryList"></div></div>
+    </section>
+
+    <section id="page-explorer" class="page">
+      <div class="explorer-top panel">
+        <label>Recurso descargado<select id="explorerResource" onchange="selectExplorerResource()"></select></label>
+        <div class="explorer-buttons"><button class="secondary" onclick="explorerNewFolder()">+ Nueva carpeta</button><button class="secondary" onclick="openResourceTagEditor()">🏷 Etiquetar recurso</button><button class="secondary" onclick="openCurrentFolderTagEditor()">🏷 Etiquetar carpeta</button><button class="secondary" onclick="explorerOpenCurrent()">Abrir en Windows</button><button class="secondary" onclick="explorerRescan()">Reindexar</button></div>
+      </div>
+      <div id="explorerEmpty" class="panel empty">Selecciona un recurso descargado para ver su estructura y sus imágenes.</div>
+      <div id="explorerWorkspace" class="explorer-layout hidden">
+        <aside class="panel explorer-tree-panel"><h3>Estructura</h3><button class="tree-root" onclick="browseExplorer('')">📁 Raíz del recurso</button><div id="folderTree" class="folder-tree"></div></aside>
+        <div class="panel explorer-main">
+          <div class="explorer-header"><div><div id="explorerBreadcrumb" class="breadcrumb"></div><p id="explorerSummary" class="muted"></p></div><div class="view-switch"><button class="secondary" onclick="setExplorerView('grid')">▦ Galería</button><button class="secondary" onclick="setExplorerView('list')">☷ Lista</button></div></div>
+          <div id="selectionBar" class="selection-bar hidden"><span id="selectionCount">0 seleccionados</span><button class="secondary" onclick="organizeSelected('copy')">Copiar a…</button><button class="secondary" onclick="organizeSelected('move')">Mover a…</button><button class="secondary" onclick="zipSelected()">ZIP selección</button><button class="primary" onclick="openCatalogCreate()">Agregar al catálogo</button><button class="secondary" onclick="clearExplorerSelection()">Limpiar</button></div>
+          <div class="template-apply-bar"><select id="explorerTemplate"><option value="">Lista de carpetas…</option></select><button class="secondary" onclick="applyFolderTemplate()">Crear estructura física aquí</button><span class="muted">Crea de una vez todas las carpetas definidas en una lista.</span></div><div id="explorerItems" class="asset-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-catalog" class="page">
+      <div class="catalog-toolbar">
+        <input id="catalogSearch" placeholder="Buscar por nombre, etiqueta, SKU o recurso..." oninput="loadCatalog()" />
+        <select id="catalogStatus" onchange="loadCatalog()"><option value="">Todos los estados</option><option value="seleccionado">Seleccionado</option><option value="preparacion">En preparación</option><option value="listo">Listo para catálogo</option><option value="publicado">Publicado</option></select>
+        <select id="catalogType" onchange="loadCatalog()"><option value="">Todos los productos</option></select>
+        <button class="secondary" onclick="exportCatalog()">Exportar CSV</button>
+      </div>
+      <div class="panel catalog-intro"><div><h2>Catálogo de sublimación</h2><p class="muted">Aquí se guarda una copia del material seleccionado sin modificar los originales descargados.</p></div><div class="catalog-flow"><span>1 Selecciona diseño</span><b>→</b><span>2 Asigna producto</span><b>→</b><span>3 Prepara</span><b>→</b><span>4 Publica</span></div></div>
+      <div id="catalogGrid" class="catalog-grid"></div>
     </section>
 
     <section id="page-categories" class="page">
       <div class="two-col">
-        <div class="panel">
-          <h2>Nueva categoría</h2>
-          <div class="row"><input id="newCategoryName" placeholder="Nombre de categoría" /><button class="primary" onclick="createCategory()">Crear</button></div>
-        </div>
-        <div class="panel">
-          <h2>Nueva subcategoría</h2>
-          <select id="subCatParent"></select>
-          <div class="row"><input id="newSubcategoryName" placeholder="Ej. Disney" /><button class="primary" onclick="createSubcategory()">Crear</button></div>
-        </div>
+        <div class="panel"><h2>Nueva categoría</h2><div class="row"><input id="newCategoryName" placeholder="Nombre de categoría" /><button class="primary" onclick="createCategory()">Crear</button></div></div>
+        <div class="panel"><h2>Nueva subcategoría</h2><select id="subCatParent"></select><div class="row"><input id="newSubcategoryName" placeholder="Ej. Disney" /><button class="primary" onclick="createSubcategory()">Crear</button></div></div>
       </div>
       <div class="panel"><h2>Estructura actual</h2><div id="categoryTree" class="category-tree"></div></div>
     </section>
 
+    <section id="page-utilities" class="page">
+      <div class="two-col utility-top">
+        <div class="panel">
+          <h2>Etiquetas</h2>
+          <p class="muted">Crea etiquetas reutilizables para identificar recursos y carpetas: Disney, Navidad, Mujer, Fútbol, Mockups, Listo para revisar, etc.</p>
+          <div class="row"><input id="newTagName" placeholder="Nombre de la etiqueta"><button class="primary" onclick="createTag()">Crear etiqueta</button></div>
+          <div id="tagsManager" class="tag-manager"></div>
+        </div>
+        <div class="panel">
+          <h2>Crear lista de carpetas</h2>
+          <p class="muted">Escribe una carpeta por línea. Puedes usar rutas anidadas como <b>MOCKUPS/Camiseta blanca</b>.</p>
+          <label>Nombre de la lista<input id="templateName" placeholder="Ej. Estructura Camisetas"></label>
+          <label>Descripción<input id="templateDescription" placeholder="Opcional"></label>
+          <label>Carpetas<textarea id="templateFolders" rows="10" placeholder="ORIGINALES
+PNG
+VECTORES
+MOCKUPS
+MOCKUPS/Camiseta blanca
+MOCKUPS/Camiseta negra
+SELECCIONADOS
+LISTOS PARA CATÁLOGO"></textarea></label>
+          <div class="actions"><button class="primary" onclick="createFolderTemplate()">Guardar lista</button></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Listas de carpetas guardadas</h2><p>Aplica cualquiera desde el Explorador para crear carpetas físicas dentro de un recurso.</p></div></div>
+        <div id="folderTemplates" class="template-grid"></div>
+      </div>
+    </section>
+
     <section id="page-settings" class="page">
       <div class="panel form-panel">
-        <h2>Almacenamiento</h2>
-        <p class="muted">Aquí se guardarán Biblioteca, Catálogo Sorprezz, Exportaciones y Temporales.</p>
-        <label>Carpeta principal
-          <div class="storage-picker"><input id="libraryPath" /><button type="button" class="secondary" onclick="chooseLibraryFolder()">Elegir carpeta…</button></div>
-        </label>
-        <div class="actions"><button class="primary" onclick="saveSettings()">Guardar ubicación</button></div>
-        <div id="configMeta" class="config-meta"></div>
+        <h2>Almacenamiento</h2><p class="muted">Aquí se guardarán Biblioteca, Catálogo Sorprezz, Exportaciones y Temporales.</p>
+        <label>Carpeta principal<div class="storage-picker"><input id="libraryPath" /><button type="button" class="secondary" onclick="chooseLibraryFolder()">Elegir carpeta…</button></div></label>
+        <div class="actions"><button class="primary" onclick="saveSettings()">Guardar ubicación</button></div><div id="configMeta" class="config-meta"></div>
       </div>
+      <div class="panel"><h2>Utilidades incluidas en esta versión</h2><div class="feature-grid"><div>🖼️ <b>Vista de imágenes</b><span>PNG, JPG, WEBP, GIF y BMP.</span></div><div>📁 <b>Explorador interno</b><span>Navega la estructura sin salir de la app.</span></div><div>➕ <b>Crear carpetas</b><span>Organiza material de trabajo.</span></div><div>↔ <b>Copiar y mover</b><span>Ordena archivos seleccionados.</span></div><div>◆ <b>Catálogo</b><span>Selecciona diseños para productos.</span></div><div>CSV <b>Exportación</b><span>Genera una lista del catálogo.</span></div><div>🏷 <b>Etiquetas</b><span>Clasifica recursos y carpetas.</span></div><div>🗂️ <b>Listas de carpetas</b><span>Crea estructuras físicas en un clic.</span></div></div></div>
     </section>
   </main>
 </div>
