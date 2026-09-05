@@ -55,6 +55,20 @@ class DesktopBridge:
         except Exception:
             return None
 
+    def choose_files(self):
+        """Selecciona uno o varios archivos locales para copiarlos a la Biblioteca."""
+        if self.window is None:
+            return []
+        try:
+            result = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True)
+            if not result:
+                return []
+            if isinstance(result, (list, tuple)):
+                return [str(x) for x in result]
+            return [str(result)]
+        except Exception:
+            return []
+
 
 def set_windows_app_id() -> None:
     try:

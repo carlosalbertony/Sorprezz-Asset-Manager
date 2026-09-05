@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +27,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -203,22 +204,11 @@ def init_db() -> None:
         for col, ddl in {
             "collection_id": "INTEGER",
             "avoid_duplicates": "INTEGER NOT NULL DEFAULT 1",
+            "source_type": "TEXT NOT NULL DEFAULT 'drive'",
+            "source_detail": "TEXT",
         }.items():
             if col not in resource_columns:
                 con.execute(f"ALTER TABLE resources ADD COLUMN {col} {ddl}")
-
-        # Migra únicamente la plantilla base creada por Sorprezz; no toca plantillas personalizadas.
-        base_tpl = con.execute("SELECT id FROM folder_templates WHERE name='Flujo base Sorprezz'").fetchone()
-        if base_tpl:
-            con.execute(
-                "UPDATE folder_templates SET description=?, updated_at=? WHERE id=?",
-                ("Estructura general para revisar, clasificar y seleccionar imágenes.", now_iso(), base_tpl["id"]),
-            )
-            con.execute(
-                "UPDATE folder_template_items SET folder_path='06 COLECCIONES' "
-                "WHERE template_id=? AND UPPER(folder_path)='06 LISTOS PARA CATÁLOGO'",
-                (base_tpl["id"],),
-            )
 
         count = con.execute("SELECT COUNT(*) AS c FROM categories").fetchone()["c"]
         if count == 0:
@@ -230,17 +220,6 @@ def init_db() -> None:
             con.executemany(
                 "INSERT INTO tags(name, created_at) VALUES (?,?)",
                 [(x, now_iso()) for x in ["Por revisar", "Favorito", "Seleccionado", "Para colección"]],
-            )
-        if con.execute("SELECT COUNT(*) AS c FROM folder_templates").fetchone()["c"] == 0:
-            cur = con.execute(
-                "INSERT INTO folder_templates(name,description,created_at,updated_at) VALUES (?,?,?,?)",
-                ("Flujo base Sorprezz", "Estructura general para revisar, clasificar y seleccionar imágenes.", now_iso(), now_iso()),
-            )
-            tid = cur.lastrowid
-            starter = ["01 ORIGINALES", "02 EDITABLES", "03 PNG", "04 MOCKUPS", "05 SELECCIONADOS", "06 COLECCIONES"]
-            con.executemany(
-                "INSERT INTO folder_template_items(template_id,folder_path,sort_order) VALUES (?,?,?)",
-                [(tid, x, i) for i, x in enumerate(starter)],
             )
         con.execute("UPDATE resources SET status='error', error='La aplicación se cerró durante la descarga.' WHERE status='descargando'")
 
@@ -630,6 +609,30 @@ class ResourceIn(BaseModel):
     avoid_duplicates: bool = True
 
 
+class ManualResourceIn(BaseModel):
+    name: str
+    category_id: int
+    subcategory_id: Optional[int] = None
+    tag_ids: list[int] = []
+    collection_id: Optional[int] = None
+
+
+class ResourceMetadataIn(BaseModel):
+    name: str
+    category_id: int
+    subcategory_id: Optional[int] = None
+    tag_ids: list[int] = []
+
+
+class ImportFilesIn(BaseModel):
+    paths: list[str] = []
+    target_path: str = ""
+
+
+class DeleteItemsIn(BaseModel):
+    paths: list[str] = []
+
+
 class ConfigIn(BaseModel):
     library_path: str
 
@@ -854,21 +857,21 @@ def resource_create(payload: ResourceIn):
             rid = int(existing["id"])
             con.execute(
                 """UPDATE resources
-                   SET name=?,category_id=?,subcategory_id=?,collection_id=?,avoid_duplicates=?,updated_at=?
+                   SET name=?,category_id=?,subcategory_id=?,collection_id=?,avoid_duplicates=?,source_type='drive',source_detail=?,updated_at=?
                    WHERE id=?""",
                 (name, payload.category_id, payload.subcategory_id, payload.collection_id,
-                 1 if payload.avoid_duplicates else 0, now_iso(), rid),
+                 1 if payload.avoid_duplicates else 0, url, now_iso(), rid),
             )
         else:
             cur = con.execute(
                 """
                 INSERT INTO resources(
-                    name,url,category_id,subcategory_id,status,collection_id,avoid_duplicates,created_at,updated_at
+                    name,url,category_id,subcategory_id,status,collection_id,avoid_duplicates,source_type,source_detail,created_at,updated_at
                 )
-                VALUES (?,?,?,?, 'pendiente', ?, ?, ?, ?)
+                VALUES (?,?,?,?, 'pendiente', ?, ?, 'drive', ?, ?, ?)
                 """,
                 (name, url, payload.category_id, payload.subcategory_id, payload.collection_id,
-                 1 if payload.avoid_duplicates else 0, now_iso(), now_iso()),
+                 1 if payload.avoid_duplicates else 0, url, now_iso(), now_iso()),
             )
             rid = int(cur.lastrowid)
 
@@ -882,6 +885,98 @@ def resource_create(payload: ResourceIn):
             "INSERT OR IGNORE INTO resource_tags(resource_id,tag_id) VALUES (?,?)",
             [(rid, tid) for tid in valid_tag_ids],
         )
+    return get_resource(rid)
+
+
+@app.post("/api/resources/manual")
+def resource_create_manual(payload: ManualResourceIn):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Escribe un nombre para el material")
+    with db() as con:
+        cat = con.execute("SELECT id,name FROM categories WHERE id=?", (payload.category_id,)).fetchone()
+        if not cat:
+            raise HTTPException(404, "La categoría seleccionada no existe")
+        sub_name = "General"
+        if payload.subcategory_id:
+            sub = con.execute(
+                "SELECT id,name FROM subcategories WHERE id=? AND category_id=?",
+                (payload.subcategory_id, payload.category_id),
+            ).fetchone()
+            if not sub:
+                raise HTTPException(400, "La subcategoría no corresponde a la categoría")
+            sub_name = sub["name"]
+        if payload.collection_id and not con.execute("SELECT id FROM collections WHERE id=?", (payload.collection_id,)).fetchone():
+            raise HTTPException(404, "La colección seleccionada no existe")
+
+    dest = library_root() / "Biblioteca" / slug_folder(cat["name"]) / slug_folder(sub_name) / slug_folder(name)
+    if dest.exists():
+        raise HTTPException(409, "Ya existe una carpeta con ese nombre en esa categoría y subcategoría")
+    dest.mkdir(parents=True, exist_ok=False)
+    manual_url = f"manual://{uuid.uuid4()}"
+    try:
+        with db() as con:
+            cur = con.execute(
+                """INSERT INTO resources(
+                       name,url,category_id,subcategory_id,status,local_path,file_count,total_bytes,error,
+                       collection_id,avoid_duplicates,source_type,source_detail,created_at,updated_at
+                   ) VALUES (?,?,?,?, 'completado', ?,0,0,NULL, ?,1,'manual','Creado manualmente',?,?)""",
+                (name, manual_url, payload.category_id, payload.subcategory_id, str(dest), payload.collection_id, now_iso(), now_iso()),
+            )
+            rid = int(cur.lastrowid)
+            for tid in payload.tag_ids:
+                if con.execute("SELECT id FROM tags WHERE id=?", (int(tid),)).fetchone():
+                    con.execute("INSERT OR IGNORE INTO resource_tags(resource_id,tag_id) VALUES (?,?)", (rid, int(tid)))
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return get_resource(rid)
+
+
+@app.put("/api/resources/{rid}/metadata")
+def resource_update_metadata(rid: int, payload: ResourceMetadataIn):
+    r = get_resource(rid)
+    if not r:
+        raise HTTPException(404, "Recurso no encontrado")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Escribe un nombre")
+    with db() as con:
+        cat = con.execute("SELECT id,name FROM categories WHERE id=?", (payload.category_id,)).fetchone()
+        if not cat:
+            raise HTTPException(404, "La categoría no existe")
+        sub_name = "General"
+        if payload.subcategory_id:
+            sub = con.execute("SELECT id,name FROM subcategories WHERE id=? AND category_id=?", (payload.subcategory_id, payload.category_id)).fetchone()
+            if not sub:
+                raise HTTPException(400, "La subcategoría no corresponde a la categoría")
+            sub_name = sub["name"]
+
+    new_local_path = r.get("local_path")
+    if r.get("local_path"):
+        current = Path(r["local_path"])
+        target = library_root() / "Biblioteca" / slug_folder(cat["name"]) / slug_folder(sub_name) / slug_folder(name)
+        try:
+            if current.exists() and current.resolve() != target.resolve():
+                if target.exists():
+                    raise HTTPException(409, "Ya existe una carpeta con ese nombre en la clasificación seleccionada")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(current), str(target))
+                new_local_path = str(target)
+        except HTTPException:
+            raise
+        except OSError as e:
+            raise HTTPException(500, f"No se pudo mover la carpeta física: {e}")
+
+    with db() as con:
+        con.execute(
+            "UPDATE resources SET name=?,category_id=?,subcategory_id=?,local_path=?,updated_at=? WHERE id=?",
+            (name, payload.category_id, payload.subcategory_id, new_local_path, now_iso(), rid),
+        )
+        con.execute("DELETE FROM resource_tags WHERE resource_id=?", (rid,))
+        for tid in payload.tag_ids:
+            if con.execute("SELECT id FROM tags WHERE id=?", (int(tid),)).fetchone():
+                con.execute("INSERT OR IGNORE INTO resource_tags(resource_id,tag_id) VALUES (?,?)", (rid, int(tid)))
     return get_resource(rid)
 
 
@@ -934,6 +1029,7 @@ def resources(q: str = "", category_id: Optional[int] = None, status: str = "", 
                 str(row.get("url") or ""),
                 str(row.get("category_name") or ""),
                 str(row.get("subcategory_name") or ""),
+                "manual" if row.get("source_type") == "manual" else "google drive descarga",
                 " ".join(str(t.get("name") or "") for t in row.get("tags", [])),
             ])
             haystack = normalize_search_text(searchable)
@@ -992,6 +1088,10 @@ def resource_rescan(rid: int):
     if not path.exists():
         raise HTTPException(404, "La carpeta local ya no existe")
     count, total = index_resource(rid, path)
+    try:
+        sync_resource_to_selected_collection(rid)
+    except Exception:
+        pass
     if count > 0:
         new_status = "completado"
         with db() as con:
@@ -1020,6 +1120,10 @@ def resources_rescan_all():
             continue
         try:
             count, total = index_resource(row["id"], path)
+            try:
+                sync_resource_to_selected_collection(row["id"])
+            except Exception:
+                pass
             files += count
             total_bytes += total
             scanned += 1
@@ -1259,6 +1363,66 @@ def resource_rename(rid: int, payload: RenameIn):
     index_resource(rid, root)
     return {"ok": True, "path": new_rel}
 
+
+
+@app.post("/api/resources/{rid}/files/import")
+def resource_import_files(rid: int, payload: ImportFilesIn):
+    if not payload.paths:
+        raise HTTPException(400, "Selecciona al menos un archivo")
+    _, root, target_dir = safe_resource_path(rid, payload.target_path)
+    if not target_dir.exists() or not target_dir.is_dir():
+        raise HTTPException(404, "La carpeta de destino no existe")
+    copied = []
+    skipped = 0
+    for raw in payload.paths:
+        src = Path(raw).expanduser()
+        if not src.exists() or not src.is_file():
+            skipped += 1
+            continue
+        try:
+            dst = unique_destination(target_dir / src.name)
+            shutil.copy2(src, dst)
+            copied.append(str(dst.relative_to(root)).replace("\\", "/"))
+        except OSError:
+            skipped += 1
+    count, total = index_resource(rid, root)
+    try:
+        sync_resource_to_selected_collection(rid)
+    except Exception:
+        pass
+    return {"ok": True, "copied": len(copied), "skipped": skipped, "items": copied, "file_count": count, "total_bytes": total}
+
+
+@app.post("/api/resources/{rid}/items/delete")
+def resource_delete_items(rid: int, payload: DeleteItemsIn):
+    if not payload.paths:
+        raise HTTPException(400, "Selecciona al menos un elemento")
+    _, root = resource_root_path(rid)
+    deleted = 0
+    normalized = []
+    for rel in payload.paths:
+        _, _, target = safe_resource_path(rid, rel)
+        if target == root:
+            continue
+        if not target.exists():
+            continue
+        rel_norm = str(target.relative_to(root)).replace("\\", "/")
+        normalized.append(rel_norm)
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            deleted += 1
+        except OSError:
+            continue
+    if normalized:
+        with db() as con:
+            for rel in normalized:
+                con.execute("DELETE FROM file_tags WHERE resource_id=? AND (rel_path=? OR rel_path LIKE ?)", (rid, rel, rel + "/%"))
+                con.execute("DELETE FROM folder_tags WHERE resource_id=? AND (rel_path=? OR rel_path LIKE ?)", (rid, rel, rel + "/%"))
+    count, total = index_resource(rid, root)
+    return {"ok": True, "deleted": deleted, "file_count": count, "total_bytes": total}
 
 @app.post("/api/resources/{rid}/files/zip")
 def resource_zip_selection(rid: int, payload: SelectionZipIn):

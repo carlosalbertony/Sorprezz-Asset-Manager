@@ -1,85 +1,78 @@
-SORPREZZ ASSET MANAGER V1.6.0
+SORPREZZ ASSET MANAGER V1.7.0
 ================================
 
 OBJETIVO
 --------
-Sorprezz Asset Manager organiza grandes bibliotecas de imágenes y carpetas descargadas desde enlaces compartidos.
-La V1.6 simplifica la arquitectura para evitar funciones duplicadas.
+Sorprezz Asset Manager organiza bibliotecas grandes de imágenes, carpetas y recursos. La V1.7 permite incorporar material tanto desde Google Drive como manualmente, sin duplicar herramientas.
 
-MENÚ PRINCIPAL
---------------
+ARQUITECTURA FINAL
+------------------
 1. Inicio
-   Resumen, actividad reciente y accesos rápidos.
+   Resumen y actividad reciente.
 
-2. Descargas
-   Registra enlaces y clasifica el material antes de descargarlo.
-   - Una carpeta o varias carpetas por lote.
-   - Nombre nuevo o sugerido desde nombres ya registrados.
-   - Categoría existente o creación rápida.
-   - Subcategoría existente o creación rápida.
-   - Etiquetas existentes o nuevas.
-   - Colección opcional existente o nueva.
-   - Prevención de enlaces duplicados.
-   - Opción de mantener la clasificación para la siguiente descarga.
-   - Descarga y descarga + agregar otro.
-   La estructura original y la indexación se conservan automáticamente porque son necesarias para Biblioteca.
+2. Agregar material
+   Una sola entrada para incorporar contenido a Biblioteca.
+   FUENTES:
+   - Google Drive: una carpeta o varias por lote.
+   - Manual: crea una carpeta/recurso vacío directamente en Biblioteca.
+   En ambos casos puedes definir nombre, categoría, subcategoría, etiquetas y colección opcional.
 
 3. Biblioteca
-   Fusiona las antiguas secciones Biblioteca y Explorador.
-   - Buscar recursos por nombre, categoría, subcategoría, etiqueta o enlace.
-   - Buscar imágenes globalmente por nombre, carpeta, recurso o etiqueta.
-   - Navegar estructura física de carpetas.
-   - Vista Galería y Lista.
-   - Crear y renombrar carpetas.
-   - Etiquetar recursos, carpetas e imágenes.
-   - Selección múltiple.
-   - Copiar, mover y descargar copias.
-   - Crear ZIP de una selección.
-   - Crear colecciones a partir de selecciones.
-   - Abrir archivos o carpetas en Windows.
-   - Reindexar y sincronizar cambios hechos manualmente en Windows.
-   No existe una sección Buscar separada: la búsqueda está integrada en Biblioteca.
+   Centro principal de administración de archivos.
+   - Recursos descargados y manuales.
+   - Fuente visible: Google Drive o Manual.
+   - Navegación por carpetas.
+   - Galería y lista.
+   - Crear carpetas.
+   - Importar archivos desde la computadora a la carpeta actual.
+   - Abrir la ubicación física en Windows.
+   - Renombrar, copiar, mover, eliminar, etiquetar y comprimir.
+   - Editar nombre, categoría, subcategoría y etiquetas de un recurso.
+   - Buscar recursos e imágenes.
+   - Sincronizar cambios hechos manualmente en Windows.
 
 4. Colecciones
-   Agrupa copias de imágenes provenientes de cualquier parte de Biblioteca.
-   - Los originales no se modifican.
-   - Crear colección desde una selección.
-   - Crear colección desde una etiqueta.
+   Reúne copias de imágenes de diferentes partes de Biblioteca sin alterar los originales.
    - Crear colección vacía.
-   - Agregar imágenes posteriormente.
-   - Abrir la carpeta física.
-   - Descargar la colección como ZIP.
-   - Buscar colecciones por nombre, categoría o descripción.
+   - Crear desde selección.
+   - Crear desde etiqueta.
+   - Agregar material después.
+   - Abrir carpeta física y exportar ZIP.
 
 5. Organización
-   Fusiona Categorías, Etiquetas y Plantillas.
+   Solo contiene herramientas que aportan al flujo:
    - Categorías y subcategorías.
-   - Etiquetas reutilizables.
-   - Plantillas de carpetas.
-   - Aplicar una plantilla para crear carpetas físicas sin alterar archivos existentes.
+   - Etiquetas.
+   Se elimina Plantillas porque no era necesaria para el uso real.
 
 6. Configuración
-   Ubicación de la biblioteca y datos técnicos de la aplicación.
+   Ubicación principal de Biblioteca y utilidades técnicas.
 
-CAMBIOS DE ARQUITECTURA
------------------------
-- Se elimina Catálogo del flujo y de la interfaz.
-- Se elimina Explorador como sección independiente; sus funciones pasan a Biblioteca.
-- Categorías y Etiquetas/Listas pasan a Organización.
-- No se crea una sección Buscar independiente.
-- La app queda centrada exclusivamente en descargar, buscar, visualizar, clasificar, etiquetar, agrupar y reorganizar imágenes.
+SINCRONIZACIÓN
+---------------
+La opción “Sincronizar todo” está siempre visible en la barra lateral y también en el encabezado.
+Si agregas, borras, mueves o renombras archivos directamente desde Windows, la sincronización vuelve a indexar todos los recursos locales.
+También puedes sincronizar un recurso individual desde Biblioteca.
+
+IMPORTACIÓN LOCAL
+-----------------
+Dentro de cualquier carpeta de Biblioteca puedes usar “Importar archivos”.
+Se abre el selector nativo de Windows, eliges uno o varios archivos y Sorprezz los copia a la carpeta actual, los indexa y actualiza conteos.
+
+CLASIFICACIÓN MANUAL
+--------------------
+Los recursos pueden crearse sin enlace. Se guardan con Fuente: Manual.
+Posteriormente se puede editar nombre, categoría, subcategoría y etiquetas. Si cambia la clasificación, Sorprezz mueve la carpeta física a la ubicación correspondiente dentro de Biblioteca.
 
 COMPATIBILIDAD
 --------------
-La V1.6 puede instalarse encima de versiones anteriores.
+La V1.7 puede instalarse encima de V1.6 y versiones anteriores.
 No desinstales antes de actualizar.
 La base de datos está en:
 %LOCALAPPDATA%\SorprezzAssetManager\data
 
-La biblioteca está en la ubicación elegida por el usuario.
-Las tablas y carpetas heredadas de funciones antiguas pueden conservarse internamente para no perder información, pero ya no forman parte del flujo de la V1.6.
+Las tablas antiguas de funciones retiradas pueden conservarse internamente para evitar pérdida de datos durante la migración, pero ya no aparecen en la interfaz.
 
 GOOGLE DRIVE
 ------------
-El motor de descarga actual sigue usando enlaces compartidos mediante gdown.
-La V1.6 optimiza la organización y el flujo de trabajo, pero no incorpora todavía OAuth oficial de Google Drive.
+El motor actual sigue utilizando enlaces compartidos mediante gdown. La V1.7 mejora la incorporación, organización manual, importación local y sincronización, pero todavía no integra OAuth oficial de Google Drive.
