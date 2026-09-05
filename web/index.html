@@ -18,12 +18,13 @@
       <button class="nav" data-page="new">＋ <span>Nueva descarga</span></button>
       <button class="nav" data-page="library">▦ <span>Biblioteca</span></button>
       <button class="nav" data-page="explorer">▤ <span>Explorador</span></button>
+      <button class="nav" data-page="collections">▣ <span>Colecciones web</span></button>
       <button class="nav" data-page="catalog">◆ <span>Catálogo</span></button>
       <button class="nav" data-page="categories">⌘ <span>Categorías</span></button>
       <button class="nav" data-page="utilities">🏷 <span>Etiquetas y listas</span></button>
       <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
     </nav>
-    <div class="version">Versión 1.4.1</div>
+    <div class="version">Versión 1.5.0</div>
   </aside>
 
   <main>
@@ -94,9 +95,31 @@
         <aside class="panel explorer-tree-panel"><h3>Estructura</h3><button class="tree-root" onclick="browseExplorer('')">📁 Raíz del recurso</button><div id="folderTree" class="folder-tree"></div></aside>
         <div class="panel explorer-main">
           <div class="explorer-header"><div><div id="explorerBreadcrumb" class="breadcrumb"></div><p id="explorerSummary" class="muted"></p></div><div class="view-switch"><button class="secondary" onclick="setExplorerView('grid')">▦ Galería</button><button class="secondary" onclick="setExplorerView('list')">☷ Lista</button></div></div>
-          <div id="selectionBar" class="selection-bar hidden"><span id="selectionCount">0 seleccionados</span><button class="secondary" onclick="organizeSelected('copy')">Copiar a…</button><button class="secondary" onclick="organizeSelected('move')">Mover a…</button><button class="secondary" onclick="zipSelected()">ZIP selección</button><button class="primary" onclick="openCatalogCreate()">Agregar al catálogo</button><button class="secondary" onclick="clearExplorerSelection()">Limpiar</button></div>
-          <div class="template-apply-bar"><select id="explorerTemplate"><option value="">Lista de carpetas…</option></select><button class="secondary" onclick="applyFolderTemplate()">Crear estructura física aquí</button><span class="muted">Crea de una vez todas las carpetas definidas en una lista.</span></div><div id="explorerItems" class="asset-grid"></div>
+          <div id="selectionBar" class="selection-bar hidden"><span id="selectionCount">0 seleccionados</span><button class="secondary" onclick="openBulkFileTagEditor()">🏷 Etiquetar selección</button><button class="primary" onclick="openCollectionCreateFromExplorer()">▣ Crear colección web</button><button class="secondary" onclick="openAddExplorerToExistingCollection()">+ Agregar a colección</button><button class="secondary" onclick="exportSelected()">↓ Descargar copia…</button><button class="secondary" onclick="organizeSelected('copy')">Copiar a…</button><button class="secondary" onclick="organizeSelected('move')">Mover a…</button><button class="secondary" onclick="zipSelected()">ZIP selección</button><button class="secondary" onclick="openCatalogCreate()">◆ Agregar al catálogo</button><button class="secondary" onclick="clearExplorerSelection()">Limpiar</button></div>
+          <div class="template-apply-bar"><select id="explorerTemplate"><option value="">Plantilla de carpetas…</option></select><button class="secondary" onclick="applyFolderTemplate()">Crear carpetas desde plantilla</button><span class="muted">Crea las carpetas de la plantilla dentro de la ubicación actual sin modificar los archivos existentes.</span></div><div id="explorerItems" class="asset-grid"></div>
         </div>
+      </div>
+    </section>
+
+    <section id="page-collections" class="page">
+      <div class="panel collection-intro">
+        <div><h2>Colecciones para la web</h2><p class="muted">Agrupa imágenes de cualquier carpeta o recurso y crea una carpeta física nueva sin tocar los originales.</p></div>
+        <div class="collection-flow"><span>1 Etiqueta o selecciona</span><b>→</b><span>2 Agrupa</span><b>→</b><span>3 Crea categoría web</span><b>→</b><span>4 Exporta o publica</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Banco global de imágenes</h2><p>Busca imágenes en todos los recursos descargados, incluso si están en carpetas diferentes.</p></div><button class="secondary" onclick="clearGlobalAssetFilters()">Limpiar filtros</button></div>
+        <div class="global-asset-toolbar">
+          <input id="globalAssetSearch" placeholder="Buscar diseño, recurso, carpeta o etiqueta..." oninput="loadGlobalAssets()">
+          <select id="globalAssetTag" onchange="loadGlobalAssets()"><option value="">Todas las etiquetas</option></select>
+          <select id="globalAssetCategory" onchange="loadGlobalAssets()"><option value="">Todas las categorías</option></select>
+          <select id="globalAssetResource" onchange="loadGlobalAssets()"><option value="">Todos los recursos</option></select>
+        </div>
+        <div id="globalSelectionBar" class="selection-bar hidden"><span id="globalSelectionCount">0 seleccionados</span><button class="primary" onclick="openCollectionCreateFromGlobal()">▣ Crear colección / carpeta</button><button class="secondary" onclick="openAddGlobalToExistingCollection()">+ Agregar a colección</button><button class="secondary" onclick="exportGlobalSelected()">↓ Descargar copia…</button><button class="secondary" onclick="addGlobalSelectionToCatalog()">◆ Agregar al catálogo</button><button class="secondary" onclick="clearGlobalSelection()">Limpiar selección</button></div>
+        <div id="globalAssetsGrid" class="asset-grid global-assets-grid"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Colecciones creadas</h2><p>Cada colección tiene una carpeta física real en <b>Colecciones_Web</b>.</p></div><div class="quick-actions"><button class="secondary" onclick="openCollectionCreateEmpty()">+ Nueva colección vacía</button><button class="primary" onclick="openCollectionFromTag()">Crear desde etiqueta</button></div></div>
+        <div id="collectionsGrid" class="collection-grid"></div>
       </div>
     </section>
 
@@ -129,9 +152,9 @@
           <div id="tagsManager" class="tag-manager"></div>
         </div>
         <div class="panel">
-          <h2>Crear lista de carpetas</h2>
+          <h2>Crear plantilla de carpetas</h2>
           <p class="muted">Escribe una carpeta por línea. Puedes usar rutas anidadas como <b>MOCKUPS/Camiseta blanca</b>.</p>
-          <label>Nombre de la lista<input id="templateName" placeholder="Ej. Estructura Camisetas"></label>
+          <label>Nombre de la plantilla<input id="templateName" placeholder="Ej. Estructura Camisetas"></label>
           <label>Descripción<input id="templateDescription" placeholder="Opcional"></label>
           <label>Carpetas<textarea id="templateFolders" rows="10" placeholder="ORIGINALES
 PNG
@@ -141,31 +164,31 @@ MOCKUPS/Camiseta blanca
 MOCKUPS/Camiseta negra
 SELECCIONADOS
 LISTOS PARA CATÁLOGO"></textarea></label>
-          <div class="actions"><button class="primary" onclick="createFolderTemplate()">Guardar lista</button></div>
+          <div class="actions"><button class="primary" onclick="createFolderTemplate()">Guardar plantilla</button></div>
         </div>
       </div>
       <div class="panel utility-apply-panel">
-        <div class="panel-head"><div><h2>Crear carpetas físicas desde una lista</h2><p>Aplica una lista guardada directamente a cualquier recurso, sin tener que navegar primero por el Explorador.</p></div></div>
+        <div class="panel-head"><div><h2>Crear carpetas desde una plantilla</h2><p>Aplica una plantilla guardada directamente a cualquier recurso. Las carpetas existentes se conservan y los archivos no se modifican.</p></div></div>
         <div class="utility-apply-grid">
           <label>Recurso<select id="utilityResource"><option value="">Selecciona un recurso...</option></select></label>
-          <label>Lista de carpetas<select id="utilityTemplate"><option value="">Selecciona una lista...</option></select></label>
+          <label>Plantilla de carpetas<select id="utilityTemplate"><option value="">Selecciona una plantilla...</option></select></label>
           <label>Ruta interna opcional<input id="utilityParentPath" placeholder="Ej. SELECCIONADOS o dejar vacío para raíz"></label>
-          <div class="inline-action"><button class="primary" onclick="applyTemplateFromUtilities()">Crear carpetas físicas</button></div>
+          <div class="inline-action"><button class="primary" onclick="applyTemplateFromUtilities()">Crear carpetas desde plantilla</button></div>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-head"><div><h2>Listas de carpetas guardadas</h2><p>Puedes editarlas, eliminarlas o aplicarlas desde esta misma sección y desde el Explorador.</p></div></div>
+        <div class="panel-head"><div><h2>Plantillas de carpetas guardadas</h2><p>Puedes editarlas, eliminarlas o aplicarlas desde esta sección y desde el Explorador.</p></div></div>
         <div id="folderTemplates" class="template-grid"></div>
       </div>
     </section>
 
     <section id="page-settings" class="page">
       <div class="panel form-panel">
-        <h2>Almacenamiento</h2><p class="muted">Aquí se guardarán Biblioteca, Catálogo Sorprezz, Exportaciones y Temporales.</p>
+        <h2>Almacenamiento</h2><p class="muted">Aquí se guardarán Biblioteca, Colecciones Web, Catálogo Sorprezz, Exportaciones y Temporales.</p>
         <label>Carpeta principal<div class="storage-picker"><input id="libraryPath" /><button type="button" class="secondary" onclick="chooseLibraryFolder()">Elegir carpeta…</button></div></label>
         <div class="actions"><button class="primary" onclick="saveSettings()">Guardar ubicación</button></div><div id="configMeta" class="config-meta"></div>
       </div>
-      <div class="panel"><h2>Utilidades incluidas en esta versión</h2><div class="feature-grid"><div>🖼️ <b>Vista de imágenes</b><span>PNG, JPG, WEBP, GIF y BMP.</span></div><div>📁 <b>Explorador interno</b><span>Navega la estructura sin salir de la app.</span></div><div>➕ <b>Crear carpetas</b><span>Organiza material de trabajo.</span></div><div>↔ <b>Copiar y mover</b><span>Ordena archivos seleccionados.</span></div><div>◆ <b>Catálogo</b><span>Selecciona diseños para productos.</span></div><div>CSV <b>Exportación</b><span>Genera una lista del catálogo.</span></div><div>🏷 <b>Etiquetas</b><span>Clasifica recursos y carpetas.</span></div><div>🗂️ <b>Listas de carpetas</b><span>Crea estructuras físicas en un clic.</span></div></div></div>
+      <div class="panel"><h2>Utilidades incluidas en esta versión</h2><div class="feature-grid"><div>🖼️ <b>Vista de imágenes</b><span>PNG, JPG, WEBP, GIF y BMP.</span></div><div>📁 <b>Explorador interno</b><span>Navega la estructura sin salir de la app.</span></div><div>➕ <b>Crear carpetas</b><span>Organiza material de trabajo.</span></div><div>↔ <b>Copiar y mover</b><span>Ordena archivos seleccionados.</span></div><div>◆ <b>Catálogo</b><span>Selecciona diseños para productos.</span></div><div>CSV <b>Exportación</b><span>Genera una lista del catálogo.</span></div><div>🏷 <b>Etiquetas de archivos</b><span>Etiqueta imágenes individuales o grupos seleccionados.</span></div><div>▣ <b>Colecciones web</b><span>Agrupa imágenes de distintos recursos en carpetas físicas nuevas.</span></div><div>↓ <b>Descargar copias</b><span>Exporta una selección a cualquier carpeta de Windows.</span></div><div>🗂️ <b>Plantillas de carpetas</b><span>Crea estructuras físicas en un clic.</span></div></div></div>
     </section>
   </main>
 </div>
