@@ -25,7 +25,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -377,19 +377,13 @@ def repair_existing_downloads() -> int:
             continue
         if count <= 0:
             continue
-        # Si antes constaba como error, no afirmamos que Drive entregó absolutamente todo:
-        # lo dejamos como descargado con aviso. Los recursos sanos permanecen completados.
-        if r["status"] == "error":
+        # V1.4.1: el estado principal refleja el contenido utilizable que existe localmente.
+        # Si hay archivos en disco, el recurso se considera completado. Cualquier incidencia
+        # de Google Drive se conserva únicamente como nota técnica dentro de Detalles.
+        if r["status"] in ("error", "parcial", "pendiente", "descargando"):
             with db() as con:
                 con.execute(
-                    "UPDATE resources SET status='parcial', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
-                    (count, total, now_iso(), r["id"]),
-                )
-            repaired += 1
-        elif r["status"] in ("pendiente", "descargando"):
-            with db() as con:
-                con.execute(
-                    "UPDATE resources SET status='completado', error=NULL, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    "UPDATE resources SET status='completado', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
                     (count, total, now_iso(), r["id"]),
                 )
             repaired += 1
@@ -476,21 +470,18 @@ def download_worker(rid: int) -> None:
                 raise RuntimeError("La descarga terminó sin archivos. Revisa los permisos del enlace.")
 
         if download_warning:
-            status = "parcial"
-            friendly_warning = (
-                f"Se descargaron e indexaron {count} archivos, pero Google Drive reportó un aviso: "
-                f"{download_warning}"
-            )
+            # El contenido descargado es utilizable: no mostramos un estado de alarma en Inicio.
+            # Guardamos la incidencia como nota técnica consultable desde Detalles.
+            technical_note = f"Nota técnica de Google Drive: {download_warning}"
             with db() as con:
                 con.execute(
-                    "UPDATE resources SET status=?, error=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
-                    (status, friendly_warning, count, total, now_iso(), rid),
+                    "UPDATE resources SET status='completado', error=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    (technical_note, count, total, now_iso(), rid),
                 )
             with active_lock:
                 active_downloads[rid] = {
                     "progress": 100,
-                    "message": f"Descargado con aviso: {count} archivos · revisa el contenido local",
-                    "warning": True,
+                    "message": f"Completado: {count} archivos indexados",
                 }
         else:
             with db() as con:
@@ -516,14 +507,13 @@ def download_worker(rid: int) -> None:
                     if count > 0:
                         with db() as con:
                             con.execute(
-                                "UPDATE resources SET status='parcial', error=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
-                                (f"La descarga dejó contenido utilizable, pero terminó con un aviso: {e}", count, total, now_iso(), rid),
+                                "UPDATE resources SET status='completado', error=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                                (f"Nota técnica de Google Drive: {e}", count, total, now_iso(), rid),
                             )
                         with active_lock:
                             active_downloads[rid] = {
                                 "progress": 100,
-                                "message": f"Descargado con aviso: {count} archivos encontrados",
-                                "warning": True,
+                                "message": f"Completado: {count} archivos encontrados",
                             }
                         recovered = True
                 except Exception:
@@ -824,13 +814,45 @@ def resource_rescan(rid: int):
         raise HTTPException(404, "La carpeta local ya no existe")
     count, total = index_resource(rid, path)
     if count > 0:
-        new_status = "parcial" if r.get("status") == "error" and r.get("error") else (r.get("status") if r.get("status") == "parcial" else "completado")
+        new_status = "completado"
         with db() as con:
             con.execute(
                 "UPDATE resources SET status=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
                 (new_status, count, total, now_iso(), rid),
             )
     return {"ok": True, "file_count": count, "total_bytes": total, "status": (new_status if count > 0 else r.get("status"))}
+
+
+@app.post("/api/resources/rescan-all")
+def resources_rescan_all():
+    """Reindexa todas las carpetas locales sin borrar ni mover archivos."""
+    with db() as con:
+        rows = [dict(x) for x in con.execute(
+            "SELECT id, local_path FROM resources WHERE local_path IS NOT NULL AND local_path <> '' ORDER BY id"
+        )]
+    scanned = 0
+    files = 0
+    total_bytes = 0
+    missing = 0
+    for row in rows:
+        path = Path(row["local_path"])
+        if not path.exists() or not path.is_dir():
+            missing += 1
+            continue
+        try:
+            count, total = index_resource(row["id"], path)
+            files += count
+            total_bytes += total
+            scanned += 1
+            if count > 0:
+                with db() as con:
+                    con.execute(
+                        "UPDATE resources SET status='completado', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                        (count, total, now_iso(), row["id"]),
+                    )
+        except Exception:
+            continue
+    return {"ok": True, "resources": scanned, "files": files, "total_bytes": total_bytes, "missing": missing}
 
 
 @app.post("/api/resources/{rid}/open")
@@ -844,10 +866,10 @@ def resource_open(rid: int):
     # Mantiene sincronizados conteo/tamaño aunque una descarga anterior haya terminado con aviso.
     try:
         count, total = index_resource(rid, p)
-        if count > 0 and r.get("status") == "error":
+        if count > 0 and r.get("status") in ("error", "parcial"):
             with db() as con:
                 con.execute(
-                    "UPDATE resources SET status='parcial', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
+                    "UPDATE resources SET status='completado', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
                     (count, total, now_iso(), rid),
                 )
     except Exception:
@@ -960,6 +982,13 @@ def resource_organize_files(rid: int, payload: FileOrganizeIn):
             shutil.copy2(src, dst)
         else:
             shutil.move(str(src), str(dst))
+            new_rel = str(dst.relative_to(root)).replace("\\", "/")
+            # Mantiene enlazados los elementos ya agregados al catálogo cuando se mueve su original.
+            with db() as con:
+                con.execute(
+                    "UPDATE catalog_items SET source_rel_path=?, updated_at=? WHERE resource_id=? AND source_rel_path=?",
+                    (new_rel, now_iso(), rid, rel),
+                )
         done.append({"source": rel, "destination": str(dst.relative_to(root)).replace("\\", "/")})
     count, total = index_resource(rid, root)
     return {"ok": True, "processed": len(done), "items": done, "file_count": count, "total_bytes": total}
@@ -977,12 +1006,33 @@ def resource_rename(rid: int, payload: RenameIn):
         raise HTTPException(400, "El nombre contiene caracteres no permitidos")
     if src.is_file() and not Path(raw).suffix and src.suffix:
         raw += src.suffix
+    old_rel = str(src.relative_to(root)).replace("\\", "/")
+    was_dir = src.is_dir()
     dst = src.with_name(raw)
     if dst.exists():
         raise HTTPException(409, "Ya existe un elemento con ese nombre")
     src.rename(dst)
+    new_rel = str(dst.relative_to(root)).replace("\\", "/")
+    # Actualiza metadatos que apuntaban a la ruta anterior.
+    with db() as con:
+        if was_dir:
+            ft_rows = [dict(x) for x in con.execute("SELECT rel_path,tag_id FROM folder_tags WHERE resource_id=?", (rid,))]
+            for row in ft_rows:
+                rp = row["rel_path"]
+                if rp == old_rel or rp.startswith(old_rel + "/"):
+                    changed = new_rel + rp[len(old_rel):]
+                    con.execute("DELETE FROM folder_tags WHERE resource_id=? AND rel_path=? AND tag_id=?", (rid, rp, row["tag_id"]))
+                    con.execute("INSERT OR IGNORE INTO folder_tags(resource_id,rel_path,tag_id) VALUES (?,?,?)", (rid, changed, row["tag_id"]))
+            ci_rows = [dict(x) for x in con.execute("SELECT id,source_rel_path FROM catalog_items WHERE resource_id=? AND source_rel_path IS NOT NULL", (rid,))]
+            for row in ci_rows:
+                rp = row["source_rel_path"]
+                if rp == old_rel or rp.startswith(old_rel + "/"):
+                    changed = new_rel + rp[len(old_rel):]
+                    con.execute("UPDATE catalog_items SET source_rel_path=?,updated_at=? WHERE id=?", (changed,now_iso(),row["id"]))
+        else:
+            con.execute("UPDATE catalog_items SET source_rel_path=?,updated_at=? WHERE resource_id=? AND source_rel_path=?", (new_rel,now_iso(),rid,old_rel))
     index_resource(rid, root)
-    return {"ok": True, "path": str(dst.relative_to(root)).replace("\\", "/")}
+    return {"ok": True, "path": new_rel}
 
 
 @app.post("/api/resources/{rid}/files/zip")

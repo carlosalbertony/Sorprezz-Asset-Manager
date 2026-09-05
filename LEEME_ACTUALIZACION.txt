@@ -1,0 +1,17 @@
+SORPREZZ ASSET MANAGER V1.4.1
+
+Archivos que debes reemplazar en GitHub:
+- app.py
+- README.txt
+- web/app.js
+- web/index.html
+- web/styles.css
+- installer/SorprezzAssetManager.iss
+
+NO reemplazar:
+- .github/workflows/build-windows.yml
+
+Después de subir los archivos a la rama main, GitHub Actions generará:
+Sorprezz-Asset-Manager-Setup-v1.4.1.exe
+
+Instala el nuevo EXE encima de la versión anterior. No desinstales ni borres SorprezzLibrary.
