@@ -28,7 +28,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -36,6 +36,18 @@ DATA_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "SorprezzAssetMan
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "sorprezz.db"
 CONFIG_PATH = DATA_DIR / "config.json"
+GOOGLE_OAUTH_CLIENT_PATH = DATA_DIR / "google_oauth_client.json"
+GOOGLE_TOKEN_DIR = DATA_DIR / "google_tokens"
+GOOGLE_TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
+GOOGLE_SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
+GOOGLE_EXPORTS = {
+    "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
+    "application/vnd.google-apps.spreadsheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"),
+    "application/vnd.google-apps.presentation": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx"),
+    "application/vnd.google-apps.drawing": ("application/pdf", ".pdf"),
+}
 
 DEFAULT_CATEGORIES = [
     "Camisetas", "Tazas", "Cojines", "Termos y Tumblers", "Stickers", "Mousepad",
@@ -284,9 +296,30 @@ def init_db() -> None:
             "avoid_duplicates": "INTEGER NOT NULL DEFAULT 1",
             "source_type": "TEXT NOT NULL DEFAULT 'drive'",
             "source_detail": "TEXT",
+            "drive_account_id": "INTEGER",
+            "drive_item_id": "TEXT",
+            "drive_item_kind": "TEXT",
+            "remote_file_count": "INTEGER NOT NULL DEFAULT 0",
+            "remote_folder_count": "INTEGER NOT NULL DEFAULT 0",
+            "remote_total_bytes": "INTEGER NOT NULL DEFAULT 0",
+            "downloaded_file_count": "INTEGER NOT NULL DEFAULT 0",
+            "skipped_file_count": "INTEGER NOT NULL DEFAULT 0",
+            "download_engine": "TEXT",
         }.items():
             if col not in resource_columns:
                 con.execute(f"ALTER TABLE resources ADD COLUMN {col} {ddl}")
+
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS drive_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                display_name TEXT,
+                token_path TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
 
         file_columns = {x["name"] for x in con.execute("PRAGMA table_info(files)")}
         for col, ddl in {
@@ -295,6 +328,32 @@ def init_db() -> None:
         }.items():
             if col not in file_columns:
                 con.execute(f"ALTER TABLE files ADD COLUMN {col} {ddl}")
+
+        # V1.8.1: Colecciones usa las mismas categorías globales que Biblioteca.
+        collection_columns = {x["name"] for x in con.execute("PRAGMA table_info(collections)")}
+        for col, ddl in {
+            "category_id": "INTEGER",
+            "subcategory_id": "INTEGER",
+        }.items():
+            if col not in collection_columns:
+                con.execute(f"ALTER TABLE collections ADD COLUMN {col} {ddl}")
+
+        # Migra las categorías de texto antiguas a categorías globales sin perder colecciones existentes.
+        old_collection_categories = [
+            (row["id"], (row["category"] or "General").strip() or "General")
+            for row in con.execute("SELECT id, category FROM collections WHERE category_id IS NULL")
+        ]
+        for collection_id, category_name in old_collection_categories:
+            cat = con.execute("SELECT id,name FROM categories WHERE name=? COLLATE NOCASE", (category_name,)).fetchone()
+            if not cat:
+                try:
+                    cur = con.execute("INSERT INTO categories(name, created_at) VALUES (?,?)", (category_name, now_iso()))
+                    category_id = cur.lastrowid
+                except sqlite3.IntegrityError:
+                    category_id = con.execute("SELECT id FROM categories WHERE name=? COLLATE NOCASE", (category_name,)).fetchone()["id"]
+            else:
+                category_id = cat["id"]
+            con.execute("UPDATE collections SET category_id=? WHERE id=?", (category_id, collection_id))
 
         # V1.7.1: evita que Windows (\) y la interfaz web (/) representen la misma ruta de forma distinta.
         normalize_metadata_paths(con)
@@ -444,11 +503,13 @@ def extract_drive_info(url: str) -> dict:
         raise ValueError("El enlace debe comenzar con http:// o https://")
     is_drive = "drive.google.com" in u or "docs.google.com" in u
     folder_match = re.search(r"/folders/([A-Za-z0-9_-]+)", u)
-    file_match = re.search(r"/file/d/([A-Za-z0-9_-]+)", u)
+    file_match = re.search(r"/(?:file/)?d/([A-Za-z0-9_-]+)", u)
+    id_match = re.search(r"[?&]id=([A-Za-z0-9_-]+)", u)
+    match = folder_match or file_match or id_match
     return {
         "is_drive": is_drive,
-        "kind": "folder" if folder_match else ("file" if file_match else "link"),
-        "id": (folder_match or file_match).group(1) if (folder_match or file_match) else None,
+        "kind": "folder" if folder_match else ("file" if match else "link"),
+        "id": match.group(1) if match else None,
     }
 
 
@@ -587,7 +648,375 @@ def sync_resource_to_selected_collection(rid: int) -> dict:
         # La descarga nunca se marca como fallida solo porque la colección no pudo sincronizarse.
         return {"added": 0, "skipped": len(refs)}
 
+def google_client_configured() -> bool:
+    if not GOOGLE_OAUTH_CLIENT_PATH.exists():
+        return False
+    try:
+        data = json.loads(GOOGLE_OAUTH_CLIENT_PATH.read_text(encoding="utf-8"))
+        installed = data.get("installed") or {}
+        return bool(installed.get("client_id") and installed.get("client_secret") and installed.get("token_uri"))
+    except Exception:
+        return False
+
+
+def validate_google_client_json(raw: bytes) -> dict:
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except Exception as e:
+        raise HTTPException(400, "El archivo no es un JSON válido de Google OAuth") from e
+    installed = data.get("installed")
+    if not isinstance(installed, dict):
+        raise HTTPException(400, "Las credenciales deben ser de tipo Aplicación de escritorio")
+    required = ["client_id", "client_secret", "auth_uri", "token_uri"]
+    if any(not installed.get(k) for k in required):
+        raise HTTPException(400, "El JSON de OAuth está incompleto")
+    return data
+
+
+def drive_accounts_rows() -> list[dict]:
+    with db() as con:
+        return [dict(x) for x in con.execute(
+            "SELECT id,email,display_name,is_active,created_at,updated_at FROM drive_accounts ORDER BY is_active DESC,email COLLATE NOCASE"
+        )]
+
+
+def drive_account_row(account_id: int) -> dict | None:
+    with db() as con:
+        row = con.execute("SELECT * FROM drive_accounts WHERE id=?", (account_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def google_credentials_for_account(account_id: int):
+    row = drive_account_row(account_id)
+    if not row:
+        raise RuntimeError("La cuenta de Google Drive seleccionada no existe")
+    token_path = Path(row["token_path"])
+    if not token_path.exists():
+        raise RuntimeError("La autorización de Google Drive ya no existe. Vuelve a conectar la cuenta.")
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+    except ImportError as e:
+        raise RuntimeError("Faltan componentes de Google Drive API. Reinstala Sorprezz Asset Manager.") from e
+    creds = Credentials.from_authorized_user_file(str(token_path), DRIVE_SCOPES)
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+        except Exception as e:
+            raise RuntimeError("La sesión de Google Drive venció. Vuelve a conectar esta cuenta.") from e
+    if not creds.valid:
+        raise RuntimeError("La sesión de Google Drive no es válida. Vuelve a conectar esta cuenta.")
+    return creds
+
+
+def drive_service_for_account(account_id: int):
+    try:
+        from googleapiclient.discovery import build
+    except ImportError as e:
+        raise RuntimeError("Faltan componentes de Google Drive API. Reinstala Sorprezz Asset Manager.") from e
+    creds = google_credentials_for_account(account_id)
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def drive_account_candidates(preferred_id: int | None = None) -> list[dict]:
+    rows = drive_accounts_rows()
+    if preferred_id:
+        return [x for x in rows if int(x["id"]) == int(preferred_id)]
+    return rows
+
+
+def drive_get_item(service, file_id: str) -> dict:
+    return service.files().get(
+        fileId=file_id,
+        fields="id,name,mimeType,size,modifiedTime,shortcutDetails",
+        supportsAllDrives=True,
+    ).execute()
+
+
+def find_drive_account_with_access(file_id: str, preferred_id: int | None = None) -> tuple[dict, object, dict]:
+    accounts = drive_account_candidates(preferred_id)
+    if not accounts:
+        raise RuntimeError("Conecta al menos una cuenta de Google Drive en Configuración")
+    last_error = None
+    for acc in accounts:
+        try:
+            service = drive_service_for_account(int(acc["id"]))
+            item = drive_get_item(service, file_id)
+            return acc, service, item
+        except Exception as e:
+            last_error = e
+    raise RuntimeError("Ninguna cuenta conectada tiene acceso a este enlace de Google Drive") from last_error
+
+
+def drive_list_children(service, folder_id: str) -> list[dict]:
+    rows: list[dict] = []
+    token = None
+    while True:
+        resp = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            spaces="drive",
+            pageSize=1000,
+            pageToken=token,
+            fields="nextPageToken,files(id,name,mimeType,size,modifiedTime,shortcutDetails)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        rows.extend(resp.get("files", []))
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return rows
+
+
+def safe_drive_name(name: str) -> str:
+    clean = re.sub(r'[<>:"/\\|?*]+', "_", str(name or "Sin_nombre")).strip().rstrip(".")
+    return (clean[:180] or "Sin_nombre")
+
+
+def drive_manifest(service, root_item: dict) -> dict:
+    files: list[dict] = []
+    skipped: list[dict] = []
+    folder_count = 0
+    total_bytes = 0
+    visited_folders: set[str] = set()
+    used_rel_paths: set[str] = set()
+
+    def unique_manifest_rel(rel_dir: PurePosixPath, name: str) -> str:
+        candidate = str(rel_dir / name) if str(rel_dir) != "." else name
+        if candidate.lower() not in used_rel_paths:
+            used_rel_paths.add(candidate.lower())
+            return candidate
+        stem, suffix = Path(name).stem, Path(name).suffix
+        i = 2
+        while True:
+            alt = f"{stem} ({i}){suffix}"
+            candidate = str(rel_dir / alt) if str(rel_dir) != "." else alt
+            if candidate.lower() not in used_rel_paths:
+                used_rel_paths.add(candidate.lower())
+                return candidate
+            i += 1
+
+    def add_file(item: dict, rel_dir: PurePosixPath, display_name: str | None = None, source_id: str | None = None):
+        nonlocal total_bytes
+        mime = item.get("mimeType") or "application/octet-stream"
+        name = safe_drive_name(display_name or item.get("name") or "archivo")
+        export_mime = None
+        export_ext = ""
+        if mime.startswith("application/vnd.google-apps."):
+            export = GOOGLE_EXPORTS.get(mime)
+            if not export:
+                skipped.append({"id": item.get("id"), "name": name, "reason": "Tipo de archivo de Google no exportable automáticamente"})
+                return
+            export_mime, export_ext = export
+            if export_ext and not name.lower().endswith(export_ext):
+                name += export_ext
+        size = int(item.get("size") or 0)
+        total_bytes += size
+        rel_path = unique_manifest_rel(rel_dir, name)
+        files.append({
+            "id": source_id or item.get("id"),
+            "name": Path(rel_path).name,
+            "rel_path": rel_path,
+            "mime_type": mime,
+            "size": size,
+            "export_mime": export_mime,
+        })
+
+    def walk_folder(folder_id: str, rel_dir: PurePosixPath):
+        nonlocal folder_count
+        if folder_id in visited_folders:
+            skipped.append({"id": folder_id, "name": str(rel_dir), "reason": "Carpeta repetida o acceso directo circular"})
+            return
+        visited_folders.add(folder_id)
+        for item in drive_list_children(service, folder_id):
+            mime = item.get("mimeType")
+            name = safe_drive_name(item.get("name") or "Sin_nombre")
+            if mime == GOOGLE_FOLDER_MIME:
+                folder_count += 1
+                walk_folder(item["id"], rel_dir / name)
+            elif mime == GOOGLE_SHORTCUT_MIME:
+                target = (item.get("shortcutDetails") or {}).get("targetId")
+                if not target:
+                    skipped.append({"id": item.get("id"), "name": name, "reason": "Acceso directo sin destino"})
+                    continue
+                try:
+                    target_item = drive_get_item(service, target)
+                    if target_item.get("mimeType") == GOOGLE_FOLDER_MIME:
+                        folder_count += 1
+                        walk_folder(target, rel_dir / name)
+                    else:
+                        add_file(target_item, rel_dir, display_name=name, source_id=target)
+                except Exception as e:
+                    skipped.append({"id": item.get("id"), "name": name, "reason": f"No se pudo resolver el acceso directo: {e}"})
+            else:
+                add_file(item, rel_dir)
+
+    if root_item.get("mimeType") == GOOGLE_FOLDER_MIME:
+        walk_folder(root_item["id"], PurePosixPath("."))
+        kind = "folder"
+    else:
+        add_file(root_item, PurePosixPath("."))
+        kind = "file"
+    return {
+        "kind": kind,
+        "name": root_item.get("name") or "Sin nombre",
+        "files": files,
+        "file_count": len(files),
+        "folder_count": folder_count,
+        "total_bytes": total_bytes,
+        "skipped": skipped,
+    }
+
+
+def drive_analyze_url(url: str, preferred_account_id: int | None = None) -> dict:
+    info = extract_drive_info(url)
+    if not info.get("is_drive") or not info.get("id"):
+        raise RuntimeError("No se pudo obtener el ID del enlace de Google Drive")
+    acc, service, item = find_drive_account_with_access(info["id"], preferred_account_id)
+    manifest = drive_manifest(service, item)
+    return {
+        "account": {"id": acc["id"], "email": acc["email"], "display_name": acc.get("display_name")},
+        "item": {"id": item["id"], "name": item.get("name"), "mime_type": item.get("mimeType"), "kind": manifest["kind"]},
+        "file_count": manifest["file_count"],
+        "folder_count": manifest["folder_count"],
+        "total_bytes": manifest["total_bytes"],
+        "skipped_count": len(manifest["skipped"]),
+        "skipped": manifest["skipped"][:20],
+    }
+
+
+def download_worker_drive_api(rid: int) -> None:
+    resource = get_resource(rid)
+    if not resource:
+        return
+    with active_lock:
+        active_downloads[rid] = {"progress": 4, "message": "Analizando Google Drive con la API oficial..."}
+    try:
+        info = extract_drive_info(resource["url"])
+        if not info.get("id"):
+            raise RuntimeError("No se pudo obtener el ID del enlace de Google Drive")
+        acc, service, root_item = find_drive_account_with_access(info["id"], resource.get("drive_account_id"))
+        manifest = drive_manifest(service, root_item)
+        cat = slug_folder(resource.get("category_name") or "Sin_categoria")
+        sub = slug_folder(resource.get("subcategory_name") or "General")
+        name = slug_folder(resource["name"])
+        dest = library_root() / "Biblioteca" / cat / sub / name
+        dest.mkdir(parents=True, exist_ok=True)
+        with db() as con:
+            con.execute(
+                """UPDATE resources SET status='descargando',local_path=?,error=NULL,drive_account_id=?,drive_item_id=?,drive_item_kind=?,
+                   remote_file_count=?,remote_folder_count=?,remote_total_bytes=?,downloaded_file_count=0,skipped_file_count=?,download_engine='drive_api',updated_at=? WHERE id=?""",
+                (str(dest), int(acc["id"]), root_item.get("id"), manifest["kind"], manifest["file_count"], manifest["folder_count"],
+                 manifest["total_bytes"], len(manifest["skipped"]), now_iso(), rid),
+            )
+        try:
+            from googleapiclient.http import MediaIoBaseDownload
+        except ImportError as e:
+            raise RuntimeError("Faltan componentes de Google Drive API. Reinstala Sorprezz Asset Manager.") from e
+
+        total_items = max(1, manifest["file_count"])
+        completed = 0
+        failed: list[str] = []
+        for idx, item in enumerate(manifest["files"], start=1):
+            rel = PurePosixPath(item["rel_path"])
+            target = dest.joinpath(*rel.parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and item.get("size") and target.stat().st_size == int(item["size"]):
+                completed += 1
+            else:
+                temp_target = target.with_name(target.name + ".sorprezz.part")
+                try:
+                    if temp_target.exists():
+                        temp_target.unlink()
+                    if item.get("export_mime"):
+                        request = service.files().export_media(fileId=item["id"], mimeType=item["export_mime"])
+                    else:
+                        request = service.files().get_media(fileId=item["id"])
+                    with temp_target.open("wb") as fh:
+                        downloader = MediaIoBaseDownload(fh, request, chunksize=8 * 1024 * 1024)
+                        done = False
+                        while not done:
+                            _, done = downloader.next_chunk()
+                    os.replace(temp_target, target)
+                    completed += 1
+                except Exception as e:
+                    failed.append(f"{item['rel_path']}: {e}")
+                    try:
+                        if temp_target.exists():
+                            temp_target.unlink()
+                    except OSError:
+                        pass
+            with active_lock:
+                pct = 18 + int((idx / total_items) * 72)
+                active_downloads[rid] = {"progress": min(90, pct), "message": f"Descargando {idx} de {total_items} archivos · {acc['email']}"}
+
+        with active_lock:
+            active_downloads[rid] = {"progress": 94, "message": "Verificando e indexando la descarga..."}
+        local_count, local_bytes = index_resource(rid, dest)
+        skipped_count = len(manifest["skipped"]) + len(failed)
+        status = "completado" if completed == manifest["file_count"] and not failed and not manifest["skipped"] else "incompleto"
+        note_parts = []
+        if manifest["skipped"]:
+            note_parts.append(f"{len(manifest['skipped'])} elementos no descargables automáticamente")
+        if failed:
+            note_parts.append(f"{len(failed)} archivos fallaron")
+        error = "; ".join(note_parts) if note_parts else None
+        with db() as con:
+            con.execute(
+                """UPDATE resources SET status=?,error=?,file_count=?,total_bytes=?,downloaded_file_count=?,skipped_file_count=?,updated_at=? WHERE id=?""",
+                (status, error, local_count, local_bytes, completed, skipped_count, now_iso(), rid),
+            )
+        sync_resource_to_selected_collection(rid)
+        with active_lock:
+            active_downloads[rid] = {
+                "progress": 100,
+                "message": (f"Verificado: {completed} de {manifest['file_count']} archivos" if status == "completado" else f"Incompleto: {completed} de {manifest['file_count']} archivos"),
+            }
+        time.sleep(1)
+    except Exception as e:
+        current = get_resource(rid)
+        local_path = current.get("local_path") if current else None
+        if local_path and Path(local_path).exists():
+            try:
+                count, total = index_resource(rid, Path(local_path))
+            except Exception:
+                count, total = 0, 0
+        else:
+            count, total = 0, 0
+        with db() as con:
+            con.execute(
+                "UPDATE resources SET status='error',error=?,file_count=?,total_bytes=?,download_engine='drive_api',updated_at=? WHERE id=?",
+                (str(e), count, total, now_iso(), rid),
+            )
+        with active_lock:
+            active_downloads[rid] = {"progress": 0, "message": str(e), "error": True}
+        time.sleep(1)
+    finally:
+        with active_lock:
+            active_downloads.pop(rid, None)
+
+
 def download_worker(rid: int) -> None:
+    resource = get_resource(rid)
+    if not resource:
+        return
+    info = extract_drive_info(resource.get("url") or "")
+    has_accounts = bool(drive_accounts_rows())
+    if google_client_configured() and has_accounts and info.get("is_drive") and info.get("id"):
+        if resource.get("drive_account_id"):
+            return download_worker_drive_api(rid)
+        # En modo Automático, usa la API si alguna cuenta puede acceder. Si ninguna puede,
+        # se conserva el modo de enlace público como respaldo para enlaces realmente públicos.
+        try:
+            find_drive_account_with_access(info["id"], None)
+            return download_worker_drive_api(rid)
+        except Exception:
+            return download_worker_public(rid)
+    return download_worker_public(rid)
+
+
+def download_worker_public(rid: int) -> None:
     resource = get_resource(rid)
     if not resource:
         return
@@ -748,6 +1177,7 @@ class ResourceIn(BaseModel):
     tag_ids: list[int] = []
     collection_id: Optional[int] = None
     avoid_duplicates: bool = True
+    drive_account_id: Optional[int] = None
 
 
 class ManualResourceIn(BaseModel):
@@ -838,7 +1268,8 @@ class SelectionExportIn(BaseModel):
 
 class CollectionIn(BaseModel):
     name: str
-    category: str = "General"
+    category_id: int
+    subcategory_id: Optional[int] = None
     description: str = ""
 
 
@@ -853,7 +1284,8 @@ class CollectionAddItemsIn(BaseModel):
 
 class CollectionFromTagIn(BaseModel):
     name: str
-    category: str = "General"
+    category_id: int
+    subcategory_id: Optional[int] = None
     description: str = ""
     tag_id: int
 
@@ -906,6 +1338,119 @@ def startup():
 @app.get("/")
 def home():
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/api/google/status")
+def google_status():
+    accounts = drive_accounts_rows()
+    return {
+        "client_configured": google_client_configured(),
+        "client_path": str(GOOGLE_OAUTH_CLIENT_PATH) if GOOGLE_OAUTH_CLIENT_PATH.exists() else None,
+        "accounts": accounts,
+        "scope": DRIVE_SCOPES[0],
+    }
+
+
+@app.post("/api/google/client")
+async def google_client_upload(file: UploadFile = File(...)):
+    raw = await file.read()
+    validate_google_client_json(raw)
+    GOOGLE_OAUTH_CLIENT_PATH.write_bytes(raw)
+    try:
+        await file.close()
+    except Exception:
+        pass
+    return {"ok": True, "client_configured": True}
+
+
+@app.delete("/api/google/client")
+def google_client_delete():
+    if GOOGLE_OAUTH_CLIENT_PATH.exists():
+        GOOGLE_OAUTH_CLIENT_PATH.unlink()
+    return {"ok": True}
+
+
+@app.post("/api/google/accounts/connect")
+def google_account_connect():
+    if not google_client_configured():
+        raise HTTPException(400, "Primero selecciona el archivo JSON del cliente OAuth")
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+    except ImportError as e:
+        raise HTTPException(500, "Faltan componentes de Google Drive API. Reinstala Sorprezz Asset Manager.") from e
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(str(GOOGLE_OAUTH_CLIENT_PATH), scopes=DRIVE_SCOPES)
+        creds = flow.run_local_server(
+            host="127.0.0.1", port=0, open_browser=True,
+            authorization_prompt_message="Se abrirá Google para autorizar Sorprezz Asset Manager.",
+            success_message="Google Drive quedó conectado. Puedes cerrar esta ventana y volver a Sorprezz Asset Manager.",
+            prompt="consent", access_type="offline",
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        about = service.about().get(fields="user").execute().get("user") or {}
+        email = (about.get("emailAddress") or "").strip()
+        if not email:
+            raise RuntimeError("Google no devolvió el correo de la cuenta autorizada")
+        display_name = (about.get("displayName") or email).strip()
+        token_name = hashlib.sha256(email.lower().encode("utf-8")).hexdigest()[:20] + ".json"
+        token_path = GOOGLE_TOKEN_DIR / token_name
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        with db() as con:
+            existing = con.execute("SELECT id FROM drive_accounts WHERE email=? COLLATE NOCASE", (email,)).fetchone()
+            if existing:
+                account_id = int(existing["id"])
+                con.execute("UPDATE drive_accounts SET display_name=?,token_path=?,updated_at=? WHERE id=?", (display_name, str(token_path), now_iso(), account_id))
+            else:
+                active_count = int(con.execute("SELECT COUNT(*) AS c FROM drive_accounts WHERE is_active=1").fetchone()["c"] or 0)
+                cur = con.execute(
+                    "INSERT INTO drive_accounts(email,display_name,token_path,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                    (email, display_name, str(token_path), 1 if active_count == 0 else 0, now_iso(), now_iso()),
+                )
+                account_id = int(cur.lastrowid)
+        return {"ok": True, "account": next(x for x in drive_accounts_rows() if int(x["id"]) == account_id)}
+    except Exception as e:
+        raise HTTPException(400, f"No se pudo conectar Google Drive: {e}")
+
+
+@app.post("/api/google/accounts/{account_id}/activate")
+def google_account_activate(account_id: int):
+    if not drive_account_row(account_id):
+        raise HTTPException(404, "Cuenta no encontrada")
+    with db() as con:
+        con.execute("UPDATE drive_accounts SET is_active=0")
+        con.execute("UPDATE drive_accounts SET is_active=1,updated_at=? WHERE id=?", (now_iso(), account_id))
+    return {"ok": True, "accounts": drive_accounts_rows()}
+
+
+@app.delete("/api/google/accounts/{account_id}")
+def google_account_delete(account_id: int):
+    row = drive_account_row(account_id)
+    if not row:
+        raise HTTPException(404, "Cuenta no encontrada")
+    try:
+        token_path = Path(row["token_path"])
+        if token_path.exists():
+            token_path.unlink()
+    except OSError:
+        pass
+    with db() as con:
+        was_active = bool(row.get("is_active"))
+        con.execute("UPDATE resources SET drive_account_id=NULL WHERE drive_account_id=?", (account_id,))
+        con.execute("DELETE FROM drive_accounts WHERE id=?", (account_id,))
+        if was_active:
+            first = con.execute("SELECT id FROM drive_accounts ORDER BY id LIMIT 1").fetchone()
+            if first:
+                con.execute("UPDATE drive_accounts SET is_active=1 WHERE id=?", (first["id"],))
+    return {"ok": True, "accounts": drive_accounts_rows()}
+
+
+@app.post("/api/google/analyze")
+def google_analyze(payload: ResourceIn):
+    try:
+        return drive_analyze_url(payload.url, payload.drive_account_id)
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/config")
@@ -978,7 +1523,14 @@ def analyze(payload: ResourceIn):
         raise HTTPException(400, str(e))
     with db() as con:
         existing = con.execute("SELECT id, name, status, local_path FROM resources WHERE url=?", (payload.url.strip(),)).fetchone()
-    return {"valid": True, "info": info, "existing": dict(existing) if existing else None}
+    result = {"valid": True, "info": info, "existing": dict(existing) if existing else None, "engine": "public_link"}
+    if info.get("is_drive") and info.get("id") and google_client_configured() and drive_accounts_rows():
+        try:
+            remote = drive_analyze_url(payload.url, payload.drive_account_id)
+            result.update({"engine": "drive_api", "remote": remote})
+        except Exception as e:
+            result["drive_api_error"] = str(e)
+    return result
 
 
 @app.post("/api/resources")
@@ -996,6 +1548,8 @@ def resource_create(payload: ResourceIn):
         with db() as con:
             if not con.execute("SELECT id FROM collections WHERE id=?", (payload.collection_id,)).fetchone():
                 raise HTTPException(404, "La colección seleccionada no existe")
+    if payload.drive_account_id and not drive_account_row(int(payload.drive_account_id)):
+        raise HTTPException(404, "La cuenta de Google Drive seleccionada no existe")
 
     with db() as con:
         existing = con.execute("SELECT id FROM resources WHERE url=?", (url,)).fetchone()
@@ -1005,21 +1559,21 @@ def resource_create(payload: ResourceIn):
             rid = int(existing["id"])
             con.execute(
                 """UPDATE resources
-                   SET name=?,category_id=?,subcategory_id=?,collection_id=?,avoid_duplicates=?,source_type='drive',source_detail=?,updated_at=?
+                   SET name=?,category_id=?,subcategory_id=?,collection_id=?,avoid_duplicates=?,drive_account_id=?,source_type='drive',source_detail=?,updated_at=?
                    WHERE id=?""",
                 (name, payload.category_id, payload.subcategory_id, payload.collection_id,
-                 1 if payload.avoid_duplicates else 0, url, now_iso(), rid),
+                 1 if payload.avoid_duplicates else 0, payload.drive_account_id, url, now_iso(), rid),
             )
         else:
             cur = con.execute(
                 """
                 INSERT INTO resources(
-                    name,url,category_id,subcategory_id,status,collection_id,avoid_duplicates,source_type,source_detail,created_at,updated_at
+                    name,url,category_id,subcategory_id,status,collection_id,avoid_duplicates,drive_account_id,source_type,source_detail,created_at,updated_at
                 )
-                VALUES (?,?,?,?, 'pendiente', ?, ?, 'drive', ?, ?, ?)
+                VALUES (?,?,?,?, 'pendiente', ?, ?, ?, 'drive', ?, ?, ?)
                 """,
                 (name, url, payload.category_id, payload.subcategory_id, payload.collection_id,
-                 1 if payload.avoid_duplicates else 0, url, now_iso(), now_iso()),
+                 1 if payload.avoid_duplicates else 0, payload.drive_account_id, url, now_iso(), now_iso()),
             )
             rid = int(cur.lastrowid)
 
@@ -1981,26 +2535,48 @@ def unique_directory(path: Path) -> Path:
     raise RuntimeError("No se pudo generar una carpeta disponible")
 
 
-def create_collection_record(name: str, category: str, description: str = "") -> dict:
+def create_collection_record(name: str, category_id: int, subcategory_id: Optional[int] = None, description: str = "") -> dict:
     name = name.strip()
-    category = category.strip() or "General"
     if not name:
         raise HTTPException(400, "Escribe un nombre para la colección")
     with db() as con:
-        if con.execute("SELECT id FROM collections WHERE category=? COLLATE NOCASE AND name=? COLLATE NOCASE", (category, name)).fetchone():
-            raise HTTPException(409, "Ya existe una colección con ese nombre dentro de esa categoría")
-    base = library_root() / "Colecciones_Web" / slug_folder(category)
+        cat = con.execute("SELECT id,name FROM categories WHERE id=?", (category_id,)).fetchone()
+        if not cat:
+            raise HTTPException(400, "Selecciona una categoría global válida")
+        sub = None
+        if subcategory_id:
+            sub = con.execute(
+                "SELECT id,name FROM subcategories WHERE id=? AND category_id=?",
+                (subcategory_id, category_id),
+            ).fetchone()
+            if not sub:
+                raise HTTPException(400, "La subcategoría no pertenece a la categoría seleccionada")
+        category_name = cat["name"]
+        subcategory_name = sub["name"] if sub else ""
+        duplicate = con.execute(
+            "SELECT id FROM collections WHERE category_id=? AND COALESCE(subcategory_id,0)=? AND name=? COLLATE NOCASE",
+            (category_id, subcategory_id or 0, name),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(409, "Ya existe una colección con ese nombre dentro de esa clasificación")
+
+    base = library_root() / "Colecciones_Web" / slug_folder(category_name)
+    if subcategory_name:
+        base = base / slug_folder(subcategory_name)
     base.mkdir(parents=True, exist_ok=True)
     physical = unique_directory(base / slug_folder(name))
     physical.mkdir(parents=True, exist_ok=False)
     with db() as con:
         cur = con.execute(
-            "INSERT INTO collections(name,category,description,physical_path,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-            (name, category, description.strip(), str(physical), now_iso(), now_iso()),
+            "INSERT INTO collections(name,category,category_id,subcategory_id,description,physical_path,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (name, category_name, category_id, subcategory_id, description.strip(), str(physical), now_iso(), now_iso()),
         )
         cid = cur.lastrowid
-    return {"id": cid, "name": name, "category": category, "description": description.strip(), "physical_path": str(physical)}
-
+    return {
+        "id": cid, "name": name, "category": category_name, "category_id": category_id,
+        "subcategory": subcategory_name, "subcategory_id": subcategory_id,
+        "description": description.strip(), "physical_path": str(physical),
+    }
 
 def add_assets_to_collection(collection_id: int, items: list[dict]) -> dict:
     with db() as con:
@@ -2052,13 +2628,21 @@ def collections_list(q: str = ""):
     with db() as con:
         rows = [dict(x) for x in con.execute(
             """SELECT c.*,
+                      cat.name AS category_name, sub.name AS subcategory_name,
                       (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id=c.id) AS item_count
-               FROM collections c ORDER BY c.updated_at DESC,c.name COLLATE NOCASE"""
+               FROM collections c
+               LEFT JOIN categories cat ON cat.id=c.category_id
+               LEFT JOIN subcategories sub ON sub.id=c.subcategory_id
+               ORDER BY c.updated_at DESC,c.name COLLATE NOCASE"""
         )]
     query = normalize_search_text(q)
     if query:
-        rows = [r for r in rows if query in normalize_search_text(f"{r['name']} {r['category']} {r.get('description') or ''}")]
+        rows = [r for r in rows if query in normalize_search_text(
+            f"{r['name']} {r.get('category_name') or r.get('category') or ''} {r.get('subcategory_name') or ''} {r.get('description') or ''}"
+        )]
     for r in rows:
+        r["category"] = r.get("category_name") or r.get("category") or "General"
+        r["subcategory"] = r.get("subcategory_name") or ""
         total = 0
         p = Path(r["physical_path"])
         if p.exists():
@@ -2072,13 +2656,19 @@ def collections_list(q: str = ""):
 
 @app.post("/api/collections")
 def collection_create(payload: CollectionIn):
-    return create_collection_record(payload.name, payload.category, payload.description)
+    return create_collection_record(payload.name, payload.category_id, payload.subcategory_id, payload.description)
 
 
 @app.get("/api/collections/{cid}")
 def collection_detail(cid: int):
     with db() as con:
-        c = con.execute("SELECT * FROM collections WHERE id=?", (cid,)).fetchone()
+        c = con.execute(
+            """SELECT c.*,cat.name AS category_name,sub.name AS subcategory_name
+               FROM collections c
+               LEFT JOIN categories cat ON cat.id=c.category_id
+               LEFT JOIN subcategories sub ON sub.id=c.subcategory_id
+               WHERE c.id=?""", (cid,)
+        ).fetchone()
         if not c:
             raise HTTPException(404, "Colección no encontrada")
         items = [dict(x) for x in con.execute(
@@ -2090,6 +2680,8 @@ def collection_detail(cid: int):
                WHERE ci.collection_id=? ORDER BY ci.id DESC""", (cid,)
         )]
     result = dict(c)
+    result["category"] = result.get("category_name") or result.get("category") or "General"
+    result["subcategory"] = result.get("subcategory_name") or ""
     for item in items:
         p = Path(item["copied_path"])
         item["exists"] = p.exists()
@@ -2121,7 +2713,7 @@ def collection_create_from_tag(payload: CollectionFromTagIn):
         )]
     if not refs:
         raise HTTPException(400, "No hay archivos etiquetados con esa etiqueta")
-    col = create_collection_record(payload.name, payload.category, payload.description)
+    col = create_collection_record(payload.name, payload.category_id, payload.subcategory_id, payload.description)
     result = add_assets_to_collection(col["id"], refs)
     if result["added"] == 0:
         with db() as con:

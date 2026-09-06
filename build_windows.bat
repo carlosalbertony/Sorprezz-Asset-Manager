@@ -22,6 +22,10 @@ pyinstaller --noconfirm --clean --windowed ^
   --icon assets\sorprezz.ico ^
   --add-data "web;web" ^
   --collect-all webview ^
+  --collect-submodules googleapiclient ^
+  --collect-submodules google_auth_oauthlib ^
+  --collect-submodules google.auth ^
+  --collect-submodules google.oauth2 ^
   desktop.py || goto :error
 
  echo [4/5] Buscando Inno Setup...
