@@ -23,7 +23,7 @@
     </nav>
     <div class="sidebar-bottom">
       <button class="sidebar-sync" onclick="syncAllResources()">↻ <span>Sincronizar todo</span></button>
-      <div class="version">Versión 1.8.0</div>
+      <div class="version">Versión 1.9.0</div>
     </div>
   </aside>
 
@@ -74,6 +74,13 @@
 
         <div id="driveSourcePanel">
           <div class="source-label">Fuente: <b>Google Drive</b></div>
+          <div class="drive-source-account">
+            <label>Cuenta de Google Drive
+              <select id="downloadDriveAccount" onchange="onDownloadDriveAccountChange()"><option value="">Automático (cuenta activa)</option></select>
+            </label>
+            <div id="downloadDriveStatus" class="drive-inline-status">Cargando conexión…</div>
+            <button type="button" class="secondary" onclick="go('settings')">Configurar Google Drive</button>
+          </div>
           <div class="segmented secondary-segmented">
             <button id="downloadModeSingleBtn" class="active" onclick="setDownloadMode('single')">Una carpeta</button>
             <button id="downloadModeBatchBtn" onclick="setDownloadMode('batch')">Varias carpetas</button>
@@ -186,7 +193,7 @@
           <div class="toolbar">
             <input id="searchQ" placeholder="Buscar recurso, categoría, subcategoría, etiqueta o fuente..." oninput="loadLibrary()" />
             <select id="filterCategory" onchange="loadLibrary()"><option value="">Todas las categorías</option></select>
-            <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="error">Con error</option></select>
+            <select id="filterStatus" onchange="loadLibrary()"><option value="">Todos los estados</option><option value="pendiente">Pendiente</option><option value="descargando">Descargando</option><option value="completado">Completado</option><option value="error">Con error</option><option value="incompleto">Incompleto</option></select>
             <select id="filterTag" onchange="loadLibrary()"><option value="">Todas las etiquetas</option></select>
             <button class="secondary" onclick="clearLibraryFilters()">Limpiar filtros</button>
           </div>
@@ -288,6 +295,28 @@
     </section>
 
     <section id="page-settings" class="page">
+      <div class="panel google-drive-panel">
+        <div class="settings-panel-head">
+          <div><h2>Google Drive</h2><p class="muted">Conecta las cuentas que tienen acceso a tus carpetas compartidas. Sorprezz usa la API oficial en modo solo lectura.</p></div>
+          <span id="googleDriveBadge" class="connection-badge">Comprobando…</span>
+        </div>
+        <input id="googleClientFile" type="file" accept=".json,application/json" class="hidden" onchange="uploadGoogleClientJson(this)">
+        <div class="google-setup-grid">
+          <div class="google-setup-card">
+            <b>1. Credenciales OAuth</b>
+            <p id="googleClientStatus" class="muted">No configuradas.</p>
+            <div class="actions left-actions"><button class="secondary" onclick="document.getElementById('googleClientFile').click()">Seleccionar JSON</button><button id="removeGoogleClientBtn" class="danger ghost-danger hidden" onclick="removeGoogleClient()">Quitar JSON</button></div>
+            <small class="muted">El JSON se copia solo a los datos locales de Sorprezz; no se sube a GitHub.</small>
+          </div>
+          <div class="google-setup-card">
+            <b>2. Cuentas autorizadas</b>
+            <p class="muted">Puedes conectar más de una cuenta y elegir cuál usar. Si dejas Automático, Sorprezz prueba la cuenta activa y luego las demás.</p>
+            <button id="connectGoogleBtn" class="primary" onclick="connectGoogleAccount()">+ Conectar cuenta Google</button>
+          </div>
+        </div>
+        <div id="googleAccounts" class="google-accounts"></div>
+        <div class="notice neutral-note"><strong>Permiso:</strong> solo lectura. Sorprezz puede analizar y descargar Drive, pero no borrar, mover ni modificar tus archivos remotos.</div>
+      </div>
       <div class="panel form-panel">
         <h2>Almacenamiento</h2>
         <p class="muted">Aquí se guardarán Biblioteca, Colecciones, Exportaciones y archivos temporales.</p>

@@ -9,6 +9,7 @@ let DOWNLOAD_TAG_IDS=new Set();
 let DOWNLOAD_MODE='single';
 let SOURCE_MODE='drive';
 let LIBRARY_MODE='resources';
+let DRIVE_STATUS={client_configured:false,accounts:[]};
 const pages={
   dashboard:['Inicio','Organiza tus imágenes y recursos desde un solo lugar.'],
   downloads:['Agregar material','Incorpora material desde Google Drive o crea una carpeta manual.'],
@@ -19,9 +20,10 @@ const pages={
 };
 
 async function api(path,opts={}){const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.detail||'Error en la operación');return data}
+async function apiForm(path,form,opts={}){const r=await fetch(path,{method:'POST',body:form,...opts});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.detail||'Error en la operación');return data}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),3500)}
 function fmtBytes(n){n=Number(n||0);if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];let i=Math.min(u.length-1,Math.floor(Math.log(n)/Math.log(1024)));return (n/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i]}
-function statusLabel(s){return {pendiente:'Pendiente',descargando:'Descargando',completado:'Completado',parcial:'Completado',error:'Con error'}[s]||s}
+function statusLabel(s){return {pendiente:'Pendiente',descargando:'Descargando',completado:'Completado',parcial:'Completado',incompleto:'Incompleto',error:'Con error'}[s]||s}
 function go(p){
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x.dataset.page===p));
@@ -95,29 +97,78 @@ async function quickDownloadTag(){
   }catch(e){toast(e.message)}
 }
 async function quickDownloadCollection(){
-  const name=prompt('Nombre de la nueva colección:');if(!name||!name.trim())return;
-  const catId=Number(document.getElementById('rCategory')?.value||0);
-  const cat=CATEGORIES.find(c=>c.id===catId);
-  const category=prompt('Categoría de la colección:',cat?.name||'General');
-  if(category===null)return;
-  try{
-    const d=await api('/api/collections',{method:'POST',body:JSON.stringify({name:name.trim(),category:(category||'General').trim(),description:''})});
-    await loadDownloadCollections();
-    document.getElementById('downloadCollection').value=String(d.id);
-    toast('Colección creada');
-  }catch(e){toast(e.message)}
+  await loadCategories();
+  const catId=Number(document.getElementById('rCategory')?.value||CATEGORIES[0]?.id||0);
+  const subId=Number(document.getElementById('rSubcategory')?.value||0);
+  document.getElementById('modalContent').innerHTML=collectionModalFields('Nueva colección','',catId,subId)+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createDownloadCollectionFromModal()">Crear y seleccionar</button></div>`;
+  document.getElementById('modal').classList.remove('hidden');
 }
+async function createDownloadCollectionFromModal(){const name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');if(!category_id)return toast('Selecciona una categoría global');try{const d=await api('/api/collections',{method:'POST',body:JSON.stringify({name,category_id,subcategory_id,description})});closeModal();await loadDownloadCollections();document.getElementById('downloadCollection').value=String(d.id);toast('Colección creada y seleccionada')}catch(e){toast(e.message)}}
 async function loadDownloadCollections(){
   try{
     const cols=await api('/api/collections');
     const sel=document.getElementById('downloadCollection');if(!sel)return;
     const keep=sel.value;
-    sel.innerHTML='<option value="">No agregar a colección</option>'+cols.map(c=>`<option value="${c.id}">${esc(c.category)} · ${esc(c.name)}</option>`).join('');
+    sel.innerHTML='<option value="">No agregar a colección</option>'+cols.map(c=>`<option value="${c.id}">${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''} · ${esc(c.name)}</option>`).join('');
     if(keep)sel.value=keep;
   }catch(e){console.warn(e)}
 }
+async function loadDriveStatus(renderSettings=false){
+  try{
+    DRIVE_STATUS=await api('/api/google/status');
+  }catch(e){DRIVE_STATUS={client_configured:false,accounts:[],error:e.message}}
+  renderDownloadDriveAccounts();
+  if(renderSettings)renderGoogleDriveSettings();
+  return DRIVE_STATUS;
+}
+function renderDownloadDriveAccounts(){
+  const sel=document.getElementById('downloadDriveAccount');
+  if(sel){
+    const keep=sel.value;
+    sel.innerHTML='<option value="">Automático (cuenta activa)</option>'+(DRIVE_STATUS.accounts||[]).map(a=>`<option value="${a.id}">${a.is_active?'★ ':''}${esc(a.email)}</option>`).join('');
+    if(keep&&[...sel.options].some(o=>o.value===keep))sel.value=keep;
+  }
+  const st=document.getElementById('downloadDriveStatus');
+  if(st){
+    if(!DRIVE_STATUS.client_configured)st.innerHTML='<span class="warn-dot">●</span> Falta seleccionar el JSON OAuth en Configuración';
+    else if(!(DRIVE_STATUS.accounts||[]).length)st.innerHTML='<span class="warn-dot">●</span> Credenciales listas · conecta una cuenta Google';
+    else st.innerHTML=`<span class="ok-dot">●</span> API oficial activa · ${(DRIVE_STATUS.accounts||[]).length} cuenta${DRIVE_STATUS.accounts.length===1?'':'s'}`;
+  }
+}
+function onDownloadDriveAccountChange(){}
+function renderGoogleDriveSettings(){
+  const badge=document.getElementById('googleDriveBadge'),client=document.getElementById('googleClientStatus'),list=document.getElementById('googleAccounts'),connect=document.getElementById('connectGoogleBtn'),remove=document.getElementById('removeGoogleClientBtn');
+  if(!badge)return;
+  const accounts=DRIVE_STATUS.accounts||[];
+  if(DRIVE_STATUS.client_configured&&accounts.length){badge.textContent='Conectado';badge.className='connection-badge connected'}
+  else if(DRIVE_STATUS.client_configured){badge.textContent='Falta conectar cuenta';badge.className='connection-badge waiting'}
+  else{badge.textContent='No configurado';badge.className='connection-badge disconnected'}
+  if(client)client.innerHTML=DRIVE_STATUS.client_configured?'<b>✓ JSON OAuth configurado localmente</b>':'Selecciona el JSON descargado desde Google Cloud.';
+  if(remove)remove.classList.toggle('hidden',!DRIVE_STATUS.client_configured);
+  if(connect)connect.disabled=!DRIVE_STATUS.client_configured;
+  if(list){
+    list.innerHTML=accounts.length?accounts.map(a=>`<div class="google-account ${a.is_active?'active-account':''}"><div><b>${esc(a.display_name||a.email)}</b><span>${esc(a.email)}</span></div><div class="google-account-actions">${a.is_active?'<span class="active-pill">Cuenta activa</span>':`<button class="secondary compact-btn" onclick="activateGoogleAccount(${a.id})">Usar esta cuenta</button>`}<button class="danger ghost-danger compact-btn" onclick="disconnectGoogleAccount(${a.id})">Desconectar</button></div></div>`).join(''):'<div class="empty-inline">Todavía no hay cuentas de Google conectadas.</div>';
+  }
+}
+async function uploadGoogleClientJson(input){
+  const file=input?.files?.[0];if(!file)return;
+  const form=new FormData();form.append('file',file);
+  try{await apiForm('/api/google/client',form);toast('Credenciales OAuth configuradas');input.value='';await loadDriveStatus(true)}catch(e){toast(e.message);input.value=''}
+}
+async function removeGoogleClient(){
+  if(!confirm('¿Quitar el JSON OAuth guardado localmente? Las cuentas ya autorizadas seguirán registradas, pero no podrás conectar nuevas hasta volver a cargarlo.'))return;
+  try{await api('/api/google/client',{method:'DELETE'});toast('Credenciales OAuth quitadas');await loadDriveStatus(true)}catch(e){toast(e.message)}
+}
+async function connectGoogleAccount(){
+  const btn=document.getElementById('connectGoogleBtn');if(btn){btn.disabled=true;btn.textContent='Esperando autorización en Google…'}
+  toast('Se abrirá Google en tu navegador. Autoriza la cuenta y vuelve a Sorprezz.');
+  try{const d=await api('/api/google/accounts/connect',{method:'POST'});toast(`Google Drive conectado: ${d.account.email}`);await loadDriveStatus(true);await loadDownloadsSetup()}catch(e){toast(e.message)}finally{if(btn){btn.disabled=false;btn.textContent='+ Conectar cuenta Google'}}
+}
+async function activateGoogleAccount(id){try{await api(`/api/google/accounts/${id}/activate`,{method:'POST'});toast('Cuenta activa actualizada');await loadDriveStatus(true)}catch(e){toast(e.message)}}
+async function disconnectGoogleAccount(id){if(!confirm('¿Desconectar esta cuenta de Google Drive de Sorprezz?'))return;try{await api(`/api/google/accounts/${id}`,{method:'DELETE'});toast('Cuenta desconectada');await loadDriveStatus(true);await loadDownloadsSetup()}catch(e){toast(e.message)}}
+
 async function loadDownloadsSetup(){
-  await Promise.all([loadCategories(),ensureTags(),loadDownloadCollections()]);
+  await Promise.all([loadCategories(),ensureTags(),loadDownloadCollections(),loadDriveStatus(false)]);
   const tagSel=document.getElementById('downloadTagSelect');
   if(tagSel){
     tagSel.innerHTML='<option value="">Agregar etiqueta…</option>'+TAGS.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');
@@ -157,20 +208,26 @@ function resourcePayload(nameOverride=null,urlOverride=null){
     subcategory_id:document.getElementById('rSubcategory')?.value?Number(document.getElementById('rSubcategory').value):null,
     tag_ids:selectedDownloadTagIds(),
     collection_id:document.getElementById('downloadCollection')?.value?Number(document.getElementById('downloadCollection').value):null,
-    avoid_duplicates:Boolean(document.getElementById('avoidDuplicates')?.checked)
+    avoid_duplicates:Boolean(document.getElementById('avoidDuplicates')?.checked),
+    drive_account_id:document.getElementById('downloadDriveAccount')?.value?Number(document.getElementById('downloadDriveAccount').value):null
   }
 }
 async function analyzeLink(){
   const p=resourcePayload();
   if(!p.url)return toast('Pega un enlace');
   if(!p.name)p.name='Sin nombre';
+  const b=document.getElementById('analyzeBox');if(b){b.classList.remove('hidden');b.innerHTML='Analizando acceso y contenido de Google Drive…'}
   try{
     const d=await api('/api/analyze',{method:'POST',body:JSON.stringify(p)});
-    const b=document.getElementById('analyzeBox');b.classList.remove('hidden');
-    b.innerHTML=d.existing
-      ?`⚠ Este enlace ya está registrado como <strong>${esc(d.existing.name)}</strong> (${statusLabel(d.existing.status)}).`
-      :`✓ Enlace válido. Tipo detectado: <strong>${d.info.kind==='folder'?'Carpeta':'Archivo/enlace'}</strong>${d.info.id?` · ID: ${esc(d.info.id)}`:''}.`;
-  }catch(e){toast(e.message)}
+    if(d.remote){
+      const r=d.remote;
+      if((!document.getElementById('rName').value.trim()||document.getElementById('rName').value.trim()==='Sin nombre')&&r.item?.name)document.getElementById('rName').value=r.item.name;
+      if(document.getElementById('downloadDriveAccount')&&r.account?.id)document.getElementById('downloadDriveAccount').value=String(r.account.id);
+      b.innerHTML=`<strong>✓ Acceso confirmado con la API oficial</strong><div class="analyze-grid"><span><b>${esc(r.item?.name||'Google Drive')}</b><small>${r.item?.kind==='folder'?'Carpeta':'Archivo'}</small></span><span><b>${r.file_count}</b><small>archivos</small></span><span><b>${r.folder_count}</b><small>subcarpetas</small></span><span><b>${fmtBytes(r.total_bytes)}</b><small>tamaño conocido</small></span></div><div class="muted">Cuenta con acceso: <b>${esc(r.account?.email||'')}</b>${r.skipped_count?` · ${r.skipped_count} elementos especiales se revisarán al descargar`:''}</div>${d.existing?`<div class="warning-inline">⚠ Este enlace ya está registrado como <b>${esc(d.existing.name)}</b>.</div>`:''}`;
+    }else{
+      b.innerHTML=d.existing?`⚠ Este enlace ya está registrado como <strong>${esc(d.existing.name)}</strong> (${statusLabel(d.existing.status)}).`:`✓ Enlace reconocido. ${d.drive_api_error?`La API oficial no pudo analizarlo: ${esc(d.drive_api_error)}. Se podrá intentar con enlace público.`:'Conecta Google Drive en Configuración para contar y verificar el contenido antes de descargar.'}`;
+    }
+  }catch(e){if(b)b.innerHTML=`<span class="error-text">${esc(e.message)}</span>`;toast(e.message)}
 }
 function parseBatchLines(){
   const raw=(document.getElementById('batchLinks')?.value||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
@@ -304,14 +361,14 @@ async function loadLibrary(){
     toast(e.message);
   }
 }
-function sourceLabel(r){return r.source_type==='manual'?'Manual':'Google Drive'}
+function sourceLabel(r){if(r.source_type==='manual')return 'Manual';return r.download_engine==='drive_api'?'Google Drive · API oficial':'Google Drive'}
 function renderResources(rs,compact=false,filtered=false){
   if(!rs.length)return `<div class="empty">${filtered?'No hay recursos que coincidan con los filtros seleccionados. Usa “Limpiar filtros” para ver toda la biblioteca.':'Todavía no hay recursos registrados.'}</div>`;
   return rs.map(r=>{
     const isManual=r.source_type==='manual';
     const dlTitle=r.status==='completado'?'Actualizar / volver a descargar':(r.status==='parcial'?'Actualizar descarga':'Descargar');
-    const sourceDetail=isManual?`<span class="source-badge source-manual">Manual</span>`:`<span class="source-badge source-drive">Google Drive</span>`;
-    return `<div class="resource"><div><div class="resource-title">${esc(r.name)}</div><div class="resource-sub">${esc(r.category_name||'Sin categoría')} · ${esc(r.subcategory_name||'General')} · ${r.file_count||0} archivos · ${fmtBytes(r.total_bytes)} · ${sourceDetail}</div>${r.live?`<div class="progress"><i style="width:${r.live.progress||0}%"></i></div><div class="resource-sub">${esc(r.live.message||'')}</div>`:''}${r.error&&!r.live&&r.status==='error'?`<div class="resource-sub error-summary">Requiere revisión. Abre Detalles para ver qué ocurrió.</div>`:''}${r.tags?.length?`<div class="chips resource-tags">${r.tags.map(t=>`<span class="chip">#${esc(t.name)}</span>`).join('')}</div>`:''}</div><div class="resource-sub">${isManual?'Creado dentro de Biblioteca':esc(r.url)}</div><div><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="res-actions">${r.local_path?`<button class="icon-btn" title="Abrir en Biblioteca" onclick="openExplorer(${r.id})">Abrir</button>`:''}<button class="icon-btn" title="Editar clasificación" onclick="openResourceMetadataEditorFor(${r.id})">Editar</button><button class="icon-btn" title="Etiquetas" onclick="openResourceTagEditorFor(${r.id})">🏷</button>${!isManual&&r.status!=='descargando'?`<button class="${compact?'icon-btn':'secondary resource-download-btn'}" title="${dlTitle}" onclick="download(${r.id})">${compact?'↓':'↓ Descargar'}</button>`:''}${r.local_path?`<button class="icon-btn" title="Abrir carpeta" onclick="openFolder(${r.id})">⌂</button><button class="icon-btn" title="Comprimir ZIP" onclick="zipResource(${r.id})">ZIP</button>`:''}<button class="icon-btn" title="Ver detalles" onclick="detail(${r.id})">⋯</button></div></div>`
+    const sourceDetail=isManual?`<span class="source-badge source-manual">Manual</span>`:`<span class="source-badge source-drive">${esc(sourceLabel(r))}</span>`;
+    return `<div class="resource"><div><div class="resource-title">${esc(r.name)}</div><div class="resource-sub">${esc(r.category_name||'Sin categoría')} · ${esc(r.subcategory_name||'General')} · ${r.file_count||0} archivos · ${fmtBytes(r.total_bytes)} · ${sourceDetail}</div>${r.live?`<div class="progress"><i style="width:${r.live.progress||0}%"></i></div><div class="resource-sub">${esc(r.live.message||'')}</div>`:''}${r.error&&!r.live&&(r.status==='error'||r.status==='incompleto')?`<div class="resource-sub error-summary">${r.status==='incompleto'?'Descarga incompleta. Abre Detalles para revisar.':'Requiere revisión. Abre Detalles para ver qué ocurrió.'}</div>`:''}${r.tags?.length?`<div class="chips resource-tags">${r.tags.map(t=>`<span class="chip">#${esc(t.name)}</span>`).join('')}</div>`:''}</div><div class="resource-sub">${isManual?'Creado dentro de Biblioteca':esc(r.url)}</div><div><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="res-actions">${r.local_path?`<button class="icon-btn" title="Abrir en Biblioteca" onclick="openExplorer(${r.id})">Abrir</button>`:''}<button class="icon-btn" title="Editar clasificación" onclick="openResourceMetadataEditorFor(${r.id})">Editar</button><button class="icon-btn" title="Etiquetas" onclick="openResourceTagEditorFor(${r.id})">🏷</button>${!isManual&&r.status!=='descargando'?`<button class="${compact?'icon-btn':'secondary resource-download-btn'}" title="${dlTitle}" onclick="download(${r.id})">${compact?'↓':'↓ Descargar'}</button>`:''}${r.local_path?`<button class="icon-btn" title="Abrir carpeta" onclick="openFolder(${r.id})">⌂</button><button class="icon-btn" title="Comprimir ZIP" onclick="zipResource(${r.id})">ZIP</button>`:''}<button class="icon-btn" title="Ver detalles" onclick="detail(${r.id})">⋯</button></div></div>`
   }).join('')
 }
 async function download(id){try{await api(`/api/resources/${id}/download`,{method:'POST'});toast('Descarga iniciada');setTimeout(loadLibrary,500)}catch(e){toast(e.message)}}
@@ -325,7 +382,7 @@ async function detail(id){
     const types=(r.types||[]).map(t=>`<span class="type-pill"><b>${esc((t.ext||'').toUpperCase())}</b> · ${t.count} · ${fmtBytes(t.bytes)}</span>`).join('');
     const files=(r.files||[]).slice(0,100).map(f=>`<tr><td>${esc(f.rel_path)}</td><td>${esc((f.ext||'').toUpperCase())}</td><td>${fmtBytes(f.size_bytes)}</td></tr>`).join('');
     const technical=r.error?`<h3>${r.status==='error'?'Detalle del error':'Nota técnica de descarga'}</h3><div class="technical-detail ${r.status==='error'?'':'technical-note'}">${esc(r.error)}</div>`:'';
-    document.getElementById('modalContent').innerHTML=`<h2>${esc(r.name)}</h2><p class="muted">${esc(r.category_name||'')} / ${esc(r.subcategory_name||'General')} · Fuente: ${sourceLabel(r)}</p><div class="detail-grid"><div class="detail-box"><b>Estado</b><br><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="detail-box"><b>Contenido local</b><br>${r.file_count} archivos · ${fmtBytes(r.total_bytes)}</div></div><h3>Tipos de archivo</h3><div class="type-grid">${types||'<span class="muted">Sin indexar</span>'}</div>${technical}<div class="actions left-actions">${r.local_path?`<button class="primary" onclick="closeModal();openExplorer(${r.id})">Explorar contenido</button>`:''}<button class="secondary" onclick="openResourceTagEditorFor(${r.id})">Etiquetas</button>${r.source_type==='manual'?'':`<button class="secondary" onclick="download(${r.id})">↓ Descargar / actualizar</button>`}<button class="secondary" onclick="openFolder(${r.id})">Abrir carpeta</button><button class="secondary" onclick="rescan(${r.id})">Reindexar</button><button class="secondary" onclick="zipResource(${r.id})">Crear ZIP</button><button class="danger" onclick="deleteResource(${r.id})">Eliminar</button></div><h3>Archivos <small class="muted">(máx. 100 visibles)</small></h3><table class="file-table"><thead><tr><th>Ruta</th><th>Tipo</th><th>Tamaño</th></tr></thead><tbody>${files||'<tr><td colspan="3">Sin archivos indexados.</td></tr>'}</tbody></table>`;
+    document.getElementById('modalContent').innerHTML=`<h2>${esc(r.name)}</h2><p class="muted">${esc(r.category_name||'')} / ${esc(r.subcategory_name||'General')} · Fuente: ${sourceLabel(r)}</p><div class="detail-grid"><div class="detail-box"><b>Estado</b><br><span class="status s-${r.status}">${statusLabel(r.status)}</span></div><div class="detail-box"><b>Contenido local</b><br>${r.file_count} archivos · ${fmtBytes(r.total_bytes)}</div>${r.download_engine==='drive_api'?`<div class="detail-box"><b>Verificación Drive</b><br>${r.downloaded_file_count||0} de ${r.remote_file_count||0} archivos${r.skipped_file_count?` · ${r.skipped_file_count} pendientes/omitidos`:''}</div><div class="detail-box"><b>Motor</b><br>Google Drive API oficial</div>`:''}</div><h3>Tipos de archivo</h3><div class="type-grid">${types||'<span class="muted">Sin indexar</span>'}</div>${technical}<div class="actions left-actions">${r.local_path?`<button class="primary" onclick="closeModal();openExplorer(${r.id})">Explorar contenido</button>`:''}<button class="secondary" onclick="openResourceTagEditorFor(${r.id})">Etiquetas</button>${r.source_type==='manual'?'':`<button class="secondary" onclick="download(${r.id})">↓ Descargar / actualizar</button>`}<button class="secondary" onclick="openFolder(${r.id})">Abrir carpeta</button><button class="secondary" onclick="rescan(${r.id})">Reindexar</button><button class="secondary" onclick="zipResource(${r.id})">Crear ZIP</button><button class="danger" onclick="deleteResource(${r.id})">Eliminar</button></div><h3>Archivos <small class="muted">(máx. 100 visibles)</small></h3><table class="file-table"><thead><tr><th>Ruta</th><th>Tipo</th><th>Tamaño</th></tr></thead><tbody>${files||'<tr><td colspan="3">Sin archivos indexados.</td></tr>'}</tbody></table>`;
     document.getElementById('modal').classList.remove('hidden')
   }catch(e){toast(e.message)}
 }
@@ -442,16 +499,21 @@ async function openBulkFileTagEditor(){
 }
 async function saveBulkFileTags(mode){const ids=[...document.querySelectorAll('#modalContent .tag-checklist input:checked')].map(x=>Number(x.value));if(!ids.length)return toast('Marca al menos una etiqueta');try{const d=await api(`/api/resources/${EXPLORER.rid}/file-tags/bulk`,{method:'PUT',body:JSON.stringify({paths:[...EXPLORER.selected],tag_ids:ids,mode})});closeModal();toast(`${d.files} archivos actualizados`);await browseExplorer(EXPLORER.path)}catch(e){toast(e.message)}}
 
-function collectionModalFields(title='Nueva colección',defaultName='',defaultCategory=''){return `<h2>${esc(title)}</h2><p class="muted">Se creará una carpeta física dentro de <b>Colecciones</b>. Los originales no se modifican.</p><div class="catalog-form"><label>Nombre de la colección<input id="collectionName" value="${esc(defaultName)}" placeholder="Ej. Nuevos diseños 8M"></label><label>Categoría<input id="collectionCategory" value="${esc(defaultCategory)}" placeholder="Ej. Camisetas / Día de la Mujer"></label><label class="wide">Descripción<input id="collectionDescription" placeholder="Opcional"></label></div>`}
+function collectionCategoryOptions(selectedId=0){return CATEGORIES.map(c=>`<option value="${c.id}" ${Number(selectedId)===Number(c.id)?'selected':''}>${esc(c.name)}</option>`).join('')}
+function collectionSubcategoryOptions(categoryId,selectedId=0){const c=CATEGORIES.find(x=>Number(x.id)===Number(categoryId));return '<option value="">General / Sin subcategoría</option>'+((c?.subcategories||[]).map(s=>`<option value="${s.id}" ${Number(selectedId)===Number(s.id)?'selected':''}>${esc(s.name)}</option>`).join(''))}
+function updateCollectionSubcategorySelect(){const catId=Number(document.getElementById('collectionCategory')?.value||0),sel=document.getElementById('collectionSubcategory');if(sel)sel.innerHTML=collectionSubcategoryOptions(catId,Number(sel.dataset.selected||0));if(sel)sel.dataset.selected='0'}
+async function quickCollectionCategory(){const name=prompt('Nombre de la nueva categoría global:');if(!name||!name.trim())return;try{const d=await api('/api/categories',{method:'POST',body:JSON.stringify({name:name.trim()})});await loadCategories();const sel=document.getElementById('collectionCategory');if(sel){sel.innerHTML=collectionCategoryOptions(d.id);sel.value=String(d.id);updateCollectionSubcategorySelect()}toast('Categoría global creada y seleccionada')}catch(e){toast(e.message)}}
+async function quickCollectionSubcategory(){const catId=Number(document.getElementById('collectionCategory')?.value||0);if(!catId)return toast('Selecciona primero una categoría');const name=prompt('Nombre de la nueva subcategoría:');if(!name||!name.trim())return;try{const d=await api('/api/subcategories',{method:'POST',body:JSON.stringify({category_id:catId,name:name.trim()})});await loadCategories();const cat=document.getElementById('collectionCategory');if(cat)cat.value=String(catId);const sub=document.getElementById('collectionSubcategory');if(sub){sub.innerHTML=collectionSubcategoryOptions(catId,d.id);sub.value=String(d.id)}toast('Subcategoría creada y seleccionada')}catch(e){toast(e.message)}}
+function collectionModalFields(title='Nueva colección',defaultName='',defaultCategoryId=0,defaultSubcategoryId=0){const categoryId=Number(defaultCategoryId)||Number(CATEGORIES[0]?.id||0);return `<h2>${esc(title)}</h2><p class="muted">La colección usa la misma clasificación global de Biblioteca. Se creará una carpeta física dentro de <b>Colecciones</b> y los originales no se modifican.</p><div class="catalog-form"><label>Nombre de la colección<input id="collectionName" value="${esc(defaultName)}" placeholder="Ej. Nuevos diseños 8M"></label><label>Categoría global<div class="field-with-action"><select id="collectionCategory" onchange="updateCollectionSubcategorySelect()">${collectionCategoryOptions(categoryId)}</select><button type="button" class="secondary compact-btn" onclick="quickCollectionCategory()">+ Nueva</button></div></label><label>Subcategoría<div class="field-with-action"><select id="collectionSubcategory" data-selected="${Number(defaultSubcategoryId)||0}">${collectionSubcategoryOptions(categoryId,defaultSubcategoryId)}</select><button type="button" class="secondary compact-btn" onclick="quickCollectionSubcategory()">+ Nueva</button></div></label><label>Descripción<input id="collectionDescription" placeholder="Opcional"></label></div>`}
 async function openCollectionCreateFromExplorer(){
   if(!EXPLORER.rid||!EXPLORER.selected.size)return toast('Selecciona una o varias imágenes');
   PENDING_COLLECTION_REFS=[...EXPLORER.selected].map(path=>({resource_id:EXPLORER.rid,path}));
-  const defaultCategory=EXPLORER.resource?.category_name||'';
-  document.getElementById('modalContent').innerHTML=collectionModalFields('Crear colección desde la selección','',defaultCategory)+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createCollectionWithRefs()">Crear carpeta y copiar</button></div>`;document.getElementById('modal').classList.remove('hidden')
+  const defaultCategoryId=Number(EXPLORER.resource?.category_id||0),defaultSubcategoryId=Number(EXPLORER.resource?.subcategory_id||0);
+  document.getElementById('modalContent').innerHTML=collectionModalFields('Crear colección desde la selección','',defaultCategoryId,defaultSubcategoryId)+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createCollectionWithRefs()">Crear carpeta y copiar</button></div>`;document.getElementById('modal').classList.remove('hidden')
 }
 async function createCollectionWithRefs(){
-  const refs=[...PENDING_COLLECTION_REFS];const name=document.getElementById('collectionName').value.trim(),category=document.getElementById('collectionCategory').value.trim()||'General',description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe el nombre de la colección');
-  try{const c=await api('/api/collections',{method:'POST',body:JSON.stringify({name,category,description})});const d=await api(`/api/collections/${c.id}/items`,{method:'POST',body:JSON.stringify({items:refs})});closeModal();toast(`Colección creada: ${d.added} archivos copiados`);clearExplorerSelection();if(document.querySelector('.page.active')?.id==='page-collections')await loadCollectionsPage()}catch(e){toast(e.message)}
+  const refs=[...PENDING_COLLECTION_REFS];const name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe el nombre de la colección');if(!category_id)return toast('Selecciona una categoría global');
+  try{const c=await api('/api/collections',{method:'POST',body:JSON.stringify({name,category_id,subcategory_id,description})});const d=await api(`/api/collections/${c.id}/items`,{method:'POST',body:JSON.stringify({items:refs})});closeModal();toast(`Colección creada: ${d.added} archivos copiados`);clearExplorerSelection();if(document.querySelector('.page.active')?.id==='page-collections')await loadCollectionsPage()}catch(e){toast(e.message)}
 }
 
 // COLECCIONES WEB Y BANCO GLOBAL
@@ -466,7 +528,7 @@ async function openAddGlobalToExistingCollection(){
   return openAddToExistingCollectionModal();
 }
 async function openAddToExistingCollectionModal(){
-  try{COLLECTIONS=await api('/api/collections');if(!COLLECTIONS.length)return toast('Primero crea una colección');document.getElementById('modalContent').innerHTML=`<h2>Agregar a una colección existente</h2><p class="muted">Se copiarán ${PENDING_COLLECTION_REFS.length} archivos. Los originales permanecerán intactos.</p><label>Colección<select id="existingCollectionSelect">${COLLECTIONS.map(c=>`<option value="${c.id}">${esc(c.category)} / ${esc(c.name)} · ${c.item_count} archivos</option>`).join('')}</select></label><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="addPendingToExistingCollection()">Copiar a colección</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}
+  try{COLLECTIONS=await api('/api/collections');if(!COLLECTIONS.length)return toast('Primero crea una colección');document.getElementById('modalContent').innerHTML=`<h2>Agregar a una colección existente</h2><p class="muted">Se copiarán ${PENDING_COLLECTION_REFS.length} archivos. Los originales permanecerán intactos.</p><label>Colección<select id="existingCollectionSelect">${COLLECTIONS.map(c=>`<option value="${c.id}">${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''} / ${esc(c.name)} · ${c.item_count} archivos</option>`).join('')}</select></label><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="addPendingToExistingCollection()">Copiar a colección</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}
 }
 async function addPendingToExistingCollection(){const cid=Number(document.getElementById('existingCollectionSelect').value);if(!cid)return;try{const d=await api(`/api/collections/${cid}/items`,{method:'POST',body:JSON.stringify({items:PENDING_COLLECTION_REFS})});closeModal();toast(`${d.added} archivos agregados${d.skipped?` · ${d.skipped} omitidos`:''}`);PENDING_COLLECTION_REFS=[];clearExplorerSelection();clearGlobalSelection();if(document.querySelector('.page.active')?.id==='page-collections')loadCollections()}catch(e){toast(e.message)}}
 
@@ -497,8 +559,8 @@ function clearGlobalSelection(){GLOBAL_SELECTED.clear();renderGlobalAssets();upd
 function updateGlobalSelectionBar(){const n=GLOBAL_SELECTED.size;const bar=document.getElementById('globalSelectionBar');if(!bar)return;document.getElementById('globalSelectionCount').textContent=`${n} seleccionado${n===1?'':'s'}`;bar.classList.toggle('hidden',!n)}
 function clearGlobalAssetFilters(){['globalAssetSearch','globalAssetTag','globalAssetCategory','globalAssetResource'].forEach(id=>{const e=document.getElementById(id);if(e)e.value=''});loadGlobalAssets()}
 async function openGlobalAsset(rid,path){openExplorer(rid);setTimeout(async()=>{await browseExplorer(path.split('/').slice(0,-1).join('/'))},160)}
-async function openCollectionCreateFromGlobal(){if(!GLOBAL_SELECTED.size)return toast('Selecciona imágenes de cualquier recurso');PENDING_COLLECTION_REFS=[...GLOBAL_SELECTED.values()];document.getElementById('modalContent').innerHTML=collectionModalFields('Crear colección')+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createGlobalCollection()">Crear carpeta y copiar</button></div>`;document.getElementById('modal').classList.remove('hidden')}
-async function createGlobalCollection(){const refs=[...PENDING_COLLECTION_REFS];const name=document.getElementById('collectionName').value.trim(),category=document.getElementById('collectionCategory').value.trim()||'General',description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe el nombre de la colección');try{const c=await api('/api/collections',{method:'POST',body:JSON.stringify({name,category,description})});const d=await api(`/api/collections/${c.id}/items`,{method:'POST',body:JSON.stringify({items:refs})});closeModal();GLOBAL_SELECTED.clear();PENDING_COLLECTION_REFS=[];toast(`${d.added} imágenes copiadas a ${category} / ${name}`);await loadCollectionsPage()}catch(e){toast(e.message)}}
+async function openCollectionCreateFromGlobal(){if(!GLOBAL_SELECTED.size)return toast('Selecciona imágenes de cualquier recurso');await loadCategories();PENDING_COLLECTION_REFS=[...GLOBAL_SELECTED.values()];document.getElementById('modalContent').innerHTML=collectionModalFields('Crear colección')+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createGlobalCollection()">Crear carpeta y copiar</button></div>`;document.getElementById('modal').classList.remove('hidden')}
+async function createGlobalCollection(){const refs=[...PENDING_COLLECTION_REFS];const name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe el nombre de la colección');if(!category_id)return toast('Selecciona una categoría global');try{const c=await api('/api/collections',{method:'POST',body:JSON.stringify({name,category_id,subcategory_id,description})});const d=await api(`/api/collections/${c.id}/items`,{method:'POST',body:JSON.stringify({items:refs})});closeModal();GLOBAL_SELECTED.clear();PENDING_COLLECTION_REFS=[];toast(`${d.added} imágenes copiadas a ${c.category}${c.subcategory?' / '+c.subcategory:''} / ${name}`);await loadCollectionsPage()}catch(e){toast(e.message)}}
 async function exportGlobalSelected(){if(!GLOBAL_SELECTED.size)return;const destination=await chooseDestinationFolder();if(!destination)return;const folderName=prompt('Nombre de la carpeta que recibirá esta selección:','Seleccion');if(folderName===null)return;const groups={};for(const ref of GLOBAL_SELECTED.values()){(groups[ref.resource_id]??=[]).push(ref.path)}let total=0,last='';try{for(const [rid,paths] of Object.entries(groups)){const d=await api(`/api/resources/${rid}/files/export`,{method:'POST',body:JSON.stringify({paths,destination_dir:destination,folder_name:folderName})});total+=d.files;last=d.destination}toast(`${total} archivos copiados a ${last}`)}catch(e){toast(e.message)}}
 
 async function loadCollections(){
@@ -507,16 +569,16 @@ async function loadCollections(){
     COLLECTIONS=await api('/api/collections'+(q?`?q=${encodeURIComponent(q)}`:''));
     const el=document.getElementById('collectionsGrid');if(!el)return;
     el.innerHTML=COLLECTIONS.length
-      ?COLLECTIONS.map(c=>`<div class="collection-card" onclick="collectionDetail(${c.id})"><div class="collection-folder">📁</div><div><h3>${esc(c.name)}</h3><p>${esc(c.category)}</p><span>${c.item_count} archivos · ${fmtBytes(c.total_bytes)}</span></div><div class="collection-actions"><button class="mini-link" onclick="event.stopPropagation();openCollectionFolder(${c.id})">Abrir carpeta</button><button class="mini-link" onclick="event.stopPropagation();zipCollection(${c.id})">Descargar ZIP</button></div></div>`).join('')
+      ?COLLECTIONS.map(c=>`<div class="collection-card" onclick="collectionDetail(${c.id})"><div class="collection-folder">📁</div><div><h3>${esc(c.name)}</h3><p>${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''}</p><span>${c.item_count} archivos · ${fmtBytes(c.total_bytes)}</span></div><div class="collection-actions"><button class="mini-link" onclick="event.stopPropagation();openCollectionFolder(${c.id})">Abrir carpeta</button><button class="mini-link" onclick="event.stopPropagation();zipCollection(${c.id})">Descargar ZIP</button></div></div>`).join('')
       :'<div class="empty">No hay colecciones que coincidan con la búsqueda.</div>';
   }catch(e){toast(e.message)}
 }
 function clearCollectionSearch(){const i=document.getElementById('collectionSearch');if(i)i.value='';loadCollections()}
-async function openCollectionCreateEmpty(){document.getElementById('modalContent').innerHTML=collectionModalFields('Nueva colección vacía')+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createEmptyCollection()">Crear carpeta</button></div>`;document.getElementById('modal').classList.remove('hidden')}
-async function createEmptyCollection(){const name=document.getElementById('collectionName').value.trim(),category=document.getElementById('collectionCategory').value.trim()||'General',description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');try{await api('/api/collections',{method:'POST',body:JSON.stringify({name,category,description})});closeModal();toast('Colección creada');loadCollections()}catch(e){toast(e.message)}}
-async function openCollectionFromTag(){await ensureTags();if(!TAGS.length)return toast('Primero crea una etiqueta');document.getElementById('modalContent').innerHTML=`<h2>Crear colección desde una etiqueta</h2><p class="muted">Se copiarán todos los archivos que tengan la etiqueta elegida, aunque estén en recursos y carpetas diferentes.</p><div class="catalog-form"><label>Etiqueta<select id="collectionSourceTag">${TAGS.map(t=>`<option value="${t.id}">${esc(t.name)} · ${t.files||0} archivos</option>`).join('')}</select></label><label>Nombre de la colección<input id="collectionName" placeholder="Ej. Selección Día de la Madre"></label><label>Categoría<input id="collectionCategory" placeholder="Ej. Camisetas"></label><label class="wide">Descripción<input id="collectionDescription" placeholder="Opcional"></label></div><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createCollectionFromTag()">Crear carpeta desde etiqueta</button></div>`;document.getElementById('modal').classList.remove('hidden')}
-async function createCollectionFromTag(){const tag_id=Number(document.getElementById('collectionSourceTag').value),name=document.getElementById('collectionName').value.trim(),category=document.getElementById('collectionCategory').value.trim()||'General',description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');try{const d=await api('/api/collections/from-tag',{method:'POST',body:JSON.stringify({tag_id,name,category,description})});closeModal();toast(`Colección creada con ${d.added} archivos`);await loadCollectionsPage()}catch(e){toast(e.message)}}
-async function collectionDetail(id){try{const c=await api(`/api/collections/${id}`);const items=c.items.map(i=>`<div class="asset-card file-asset"><div class="asset-preview">${i.previewable?`<img src="/api/collections/${id}/items/${i.id}/preview" alt="${esc(i.name)}">`:`<div class="file-icon">${fileIcon(i.ext)}</div>`}</div><div class="asset-name">${esc(i.name)}</div><div class="asset-meta">Origen: ${esc(i.resource_name||'')} · ${fmtBytes(i.size_bytes)}</div><div class="asset-mini-actions"><button class="mini-link danger-text" onclick="removeCollectionItem(${id},${i.id})">Quitar copia</button></div></div>`).join('');document.getElementById('modalContent').innerHTML=`<div class="collection-detail-head"><div><h2>${esc(c.name)}</h2><p class="muted">${esc(c.category)} · ${c.items.length} archivos</p><p class="muted">${esc(c.description||'')}</p></div><div class="quick-actions"><button class="secondary" onclick="openCollectionFolder(${id})">Abrir carpeta</button><button class="secondary" onclick="zipCollection(${id})">↓ Descargar ZIP</button><button class="danger" onclick="deleteCollection(${id})">Eliminar colección</button></div></div><div class="asset-grid collection-items-grid">${items||'<div class="empty">Colección vacía.</div>'}</div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
+async function openCollectionCreateEmpty(){await loadCategories();document.getElementById('modalContent').innerHTML=collectionModalFields('Nueva colección vacía')+`<div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createEmptyCollection()">Crear carpeta</button></div>`;document.getElementById('modal').classList.remove('hidden')}
+async function createEmptyCollection(){const name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');if(!category_id)return toast('Selecciona una categoría global');try{await api('/api/collections',{method:'POST',body:JSON.stringify({name,category_id,subcategory_id,description})});closeModal();toast('Colección creada');loadCollections()}catch(e){toast(e.message)}}
+async function openCollectionFromTag(){await Promise.all([ensureTags(),loadCategories()]);if(!TAGS.length)return toast('Primero crea una etiqueta');document.getElementById('modalContent').innerHTML=`<h2>Crear colección desde una etiqueta</h2><p class="muted">Se copiarán todos los archivos con la etiqueta elegida. La colección usará las categorías globales de Biblioteca.</p><div class="catalog-form"><label>Etiqueta<select id="collectionSourceTag">${TAGS.map(t=>`<option value="${t.id}">${esc(t.name)} · ${t.files||0} archivos</option>`).join('')}</select></label><label>Nombre de la colección<input id="collectionName" placeholder="Ej. Selección Día de la Madre"></label><label>Categoría global<div class="field-with-action"><select id="collectionCategory" onchange="updateCollectionSubcategorySelect()">${collectionCategoryOptions(CATEGORIES[0]?.id||0)}</select><button type="button" class="secondary compact-btn" onclick="quickCollectionCategory()">+ Nueva</button></div></label><label>Subcategoría<div class="field-with-action"><select id="collectionSubcategory">${collectionSubcategoryOptions(CATEGORIES[0]?.id||0)}</select><button type="button" class="secondary compact-btn" onclick="quickCollectionSubcategory()">+ Nueva</button></div></label><label class="wide">Descripción<input id="collectionDescription" placeholder="Opcional"></label></div><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createCollectionFromTag()">Crear carpeta desde etiqueta</button></div>`;document.getElementById('modal').classList.remove('hidden')}
+async function createCollectionFromTag(){const tag_id=Number(document.getElementById('collectionSourceTag').value),name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');if(!category_id)return toast('Selecciona una categoría global');try{const d=await api('/api/collections/from-tag',{method:'POST',body:JSON.stringify({tag_id,name,category_id,subcategory_id,description})});closeModal();toast(`Colección creada con ${d.added} archivos`);await loadCollectionsPage()}catch(e){toast(e.message)}}
+async function collectionDetail(id){try{const c=await api(`/api/collections/${id}`);const items=c.items.map(i=>`<div class="asset-card file-asset"><div class="asset-preview">${i.previewable?`<img src="/api/collections/${id}/items/${i.id}/preview" alt="${esc(i.name)}">`:`<div class="file-icon">${fileIcon(i.ext)}</div>`}</div><div class="asset-name">${esc(i.name)}</div><div class="asset-meta">Origen: ${esc(i.resource_name||'')} · ${fmtBytes(i.size_bytes)}</div><div class="asset-mini-actions"><button class="mini-link danger-text" onclick="removeCollectionItem(${id},${i.id})">Quitar copia</button></div></div>`).join('');document.getElementById('modalContent').innerHTML=`<div class="collection-detail-head"><div><h2>${esc(c.name)}</h2><p class="muted">${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''} · ${c.items.length} archivos</p><p class="muted">${esc(c.description||'')}</p></div><div class="quick-actions"><button class="secondary" onclick="openCollectionFolder(${id})">Abrir carpeta</button><button class="secondary" onclick="zipCollection(${id})">↓ Descargar ZIP</button><button class="danger" onclick="deleteCollection(${id})">Eliminar colección</button></div></div><div class="asset-grid collection-items-grid">${items||'<div class="empty">Colección vacía.</div>'}</div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
 async function openCollectionFolder(id){try{await api(`/api/collections/${id}/open`,{method:'POST'})}catch(e){toast(e.message)}}
 async function zipCollection(id){try{const d=await api(`/api/collections/${id}/zip`,{method:'POST'});toast('ZIP creado en Exportaciones: '+d.path)}catch(e){toast(e.message)}}
 async function removeCollectionItem(cid,itemId){if(!confirm('¿Quitar esta copia de la colección? El original no se borrará.'))return;try{await api(`/api/collections/${cid}/items/${itemId}`,{method:'DELETE'});toast('Copia retirada');collectionDetail(cid);loadCollections()}catch(e){toast(e.message)}}
@@ -576,7 +638,7 @@ async function syncAllResources(){
     }
   }catch(e){toast(e.message)}
 }
-async function loadSettings(){const c=await api('/api/config');document.getElementById('libraryPath').value=c.library_path;document.getElementById('configMeta').innerHTML=`Versión ${c.version}<br>Base de datos: ${esc(c.db_path)}`}
+async function loadSettings(){const [c]=await Promise.all([api('/api/config'),loadDriveStatus(true)]);document.getElementById('libraryPath').value=c.library_path;document.getElementById('configMeta').innerHTML=`Versión ${c.version}<br>Base de datos: ${esc(c.db_path)}`}
 async function chooseLibraryFolder(){try{if(window.pywebview&&window.pywebview.api&&window.pywebview.api.choose_folder){const p=await window.pywebview.api.choose_folder();if(p)document.getElementById('libraryPath').value=p;return}toast('El selector de carpetas está disponible en la aplicación instalada de Windows.')}catch(e){toast(e.message||'No se pudo abrir el selector de carpetas')}}
 async function saveSettings(){const p=document.getElementById('libraryPath').value.trim();if(!p)return;try{const d=await api('/api/config',{method:'PUT',body:JSON.stringify({library_path:p})});toast('Ubicación guardada: '+d.library_path);loadSettings()}catch(e){toast(e.message)}}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
