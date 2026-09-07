@@ -28,7 +28,7 @@ from pydantic import BaseModel
 import uvicorn
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -1328,11 +1328,28 @@ class CatalogUpdateIn(BaseModel):
     notes: str = ""
 
 
+def _background_repair_existing_downloads() -> None:
+    """Repara/indexa recursos existentes sin bloquear el arranque de la interfaz.
+
+    En bibliotecas grandes o ubicadas en discos lentos/OneDrive, recorrer y calcular
+    huellas puede tardar bastante. La app debe quedar disponible primero.
+    """
+    try:
+        repair_existing_downloads()
+    except Exception:
+        # Es una tarea de mantenimiento: un fallo aquí nunca debe impedir abrir Sorprezz.
+        pass
+
+
 @app.on_event("startup")
 def startup():
     init_db()
     load_config()
-    repair_existing_downloads()
+    threading.Thread(
+        target=_background_repair_existing_downloads,
+        daemon=True,
+        name="SorprezzStartupRepair",
+    ).start()
 
 
 @app.get("/")

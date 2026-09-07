@@ -1,4 +1,11 @@
-SORPREZZ ASSET MANAGER V1.9.0
+SORPREZZ ASSET MANAGER V1.9.1
+
+HOTFIX V1.9.1 - ARRANQUE ESTABLE
+- La reindexación automática ya no bloquea el inicio de la interfaz.
+- El tiempo de espera del servicio local aumenta de 12 a 60 segundos.
+- Si el servidor interno falla, se guarda diagnóstico en %LOCALAPPDATA%\SorprezzAssetManager\data\startup.log.
+- No borra Biblioteca, etiquetas, colecciones, cuentas OAuth ni configuración.
+
 =============================
 
 OBJETIVO
@@ -11,7 +18,7 @@ Sorprezz Asset Manager organiza grandes bibliotecas de imágenes y recursos:
 - colecciones físicas de imágenes seleccionadas
 - búsqueda visual y sincronización con cambios hechos en Windows
 
-NOVEDADES V1.9.0 - GOOGLE DRIVE API OFICIAL
+NOVEDADES V1.9.1 - GOOGLE DRIVE API OFICIAL
 -------------------------------------------
 1. Configuración > Google Drive permite cargar localmente el JSON OAuth de tipo Aplicación de escritorio.
 2. El JSON se guarda fuera de la carpeta del programa en:
@@ -86,10 +93,10 @@ Documents\SorprezzLibrary
 
 ACTUALIZAR DESDE V1.8.x
 -----------------------
-Instalar V1.9.0 encima de la versión anterior. No desinstalar ni borrar la Biblioteca.
+Instalar V1.9.1 encima de la versión anterior. No desinstalar ni borrar la Biblioteca.
 La migración agrega de forma no destructiva los campos de Google Drive API y la tabla de cuentas.
 
-ARCHIVOS QUE CAMBIAN EN V1.9.0
+ARCHIVOS QUE CAMBIAN EN V1.9.1
 ------------------------------
 app.py
 desktop.py
