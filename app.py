@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -1965,6 +1965,42 @@ def resource_preview(rid: int, path: str):
     return FileResponse(target)
 
 
+@app.get("/api/resources/{rid}/files/download")
+def resource_file_download(rid: int, path: str):
+    """Descarga directa por HTTP, para usar el programa desde otra PC/celular en la red."""
+    _, _, target = safe_resource_path(rid, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+    return FileResponse(target, filename=target.name)
+
+
+def safe_library_path(rel_path: str) -> Path:
+    root = library_root().resolve()
+    clean = (rel_path or "").replace("\\", "/").strip("/")
+    target = (root / clean).resolve() if clean else root
+    if not _is_within(target, root):
+        raise HTTPException(400, "Ruta no válida")
+    return target
+
+
+def library_relative_path(absolute: str | Path) -> str:
+    return str(Path(absolute).resolve().relative_to(library_root().resolve())).replace("\\", "/")
+
+
+def is_local_request(request: Request) -> bool:
+    return bool(request.client) and request.client.host in ("127.0.0.1", "::1")
+
+
+@app.get("/api/library/download")
+def library_file_download(path: str):
+    """Descarga por HTTP cualquier archivo dentro de la Biblioteca (ZIPs exportados, colecciones, etc.),
+    para usar el programa desde otra PC/celular en la red."""
+    target = safe_library_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+    return FileResponse(target, filename=target.name)
+
+
 @app.post("/api/resources/{rid}/folders")
 def resource_create_folder(rid: int, payload: FolderCreateIn):
     name = slug_folder(payload.name)
@@ -2235,7 +2271,7 @@ def resource_zip_selection(rid: int, payload: SelectionZipIn):
         except OSError:
             pass
         raise HTTPException(400, "No se encontraron archivos válidos para comprimir")
-    return {"ok": True, "path": str(out), "files": added}
+    return {"ok": True, "path": str(out), "download_path": library_relative_path(out), "files": added}
 
 
 @app.post("/api/resources/{rid}/file/open")
@@ -2769,7 +2805,7 @@ def collection_open(cid: int):
 
 
 @app.post("/api/collections/{cid}/zip")
-def collection_zip(cid: int):
+def collection_zip(cid: int, request: Request):
     with db() as con:
         c = con.execute("SELECT * FROM collections WHERE id=?", (cid,)).fetchone()
     if not c:
@@ -2781,11 +2817,12 @@ def collection_zip(cid: int):
     out_dir.mkdir(parents=True, exist_ok=True)
     base = out_dir / f"{slug_folder(c['category'])}_{slug_folder(c['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     archive = shutil.make_archive(str(base), "zip", root_dir=str(src))
-    try:
-        open_os_path(out_dir)
-    except Exception:
-        pass
-    return {"ok": True, "path": archive}
+    if is_local_request(request):
+        try:
+            open_os_path(out_dir)
+        except Exception:
+            pass
+    return {"ok": True, "path": archive, "download_path": library_relative_path(archive)}
 
 
 @app.delete("/api/collections/{cid}/items/{item_id}")
@@ -3115,7 +3152,7 @@ def resource_zip(rid: int):
     out_dir.mkdir(parents=True, exist_ok=True)
     base = out_dir / f"{slug_folder(r['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     archive = shutil.make_archive(str(base), "zip", root_dir=str(src))
-    return {"ok": True, "path": archive}
+    return {"ok": True, "path": archive, "download_path": library_relative_path(archive)}
 
 
 @app.delete("/api/resources/{rid}")
