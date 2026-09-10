@@ -1965,6 +1965,15 @@ def resource_preview(rid: int, path: str):
     return FileResponse(target)
 
 
+@app.get("/api/resources/{rid}/files/download")
+def resource_file_download(rid: int, path: str):
+    """Descarga directa por HTTP, para usar el programa desde otra PC/celular en la red."""
+    _, _, target = safe_resource_path(rid, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+    return FileResponse(target, filename=target.name)
+
+
 @app.post("/api/resources/{rid}/folders")
 def resource_create_folder(rid: int, payload: FolderCreateIn):
     name = slug_folder(payload.name)

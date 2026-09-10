@@ -484,10 +484,14 @@ async function exportSelected(){
 }
 
 async function exportSingleExplorerFile(path){
-  if(!EXPLORER.rid)return;const destination=await chooseDestinationFolder();if(!destination)return;
+  if(!EXPLORER.rid)return;
+  if(!isLocalHost())return window.open(`/api/resources/${EXPLORER.rid}/files/download?path=${encodeURIComponent(path)}`,'_blank');
+  const destination=await chooseDestinationFolder();if(!destination)return;
   try{const d=await api(`/api/resources/${EXPLORER.rid}/files/export`,{method:'POST',body:JSON.stringify({paths:[path],destination_dir:destination,folder_name:''})});toast(`Archivo descargado en ${d.destination}`)}catch(e){toast(e.message)}
 }
-async function exportSingleGlobalAsset(rid,path){const destination=await chooseDestinationFolder();if(!destination)return;try{const d=await api(`/api/resources/${rid}/files/export`,{method:'POST',body:JSON.stringify({paths:[path],destination_dir:destination,folder_name:''})});toast(`Archivo descargado en ${d.destination}`)}catch(e){toast(e.message)}}
+async function exportSingleGlobalAsset(rid,path){
+  if(!isLocalHost())return window.open(`/api/resources/${rid}/files/download?path=${encodeURIComponent(path)}`,'_blank');
+  const destination=await chooseDestinationFolder();if(!destination)return;try{const d=await api(`/api/resources/${rid}/files/export`,{method:'POST',body:JSON.stringify({paths:[path],destination_dir:destination,folder_name:''})});toast(`Archivo descargado en ${d.destination}`)}catch(e){toast(e.message)}}
 
 async function openFileTagEditor(path){
   if(!EXPLORER.rid)return;await ensureTags();
