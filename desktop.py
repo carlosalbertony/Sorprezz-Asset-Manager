@@ -14,15 +14,26 @@ from app import APP_NAME, APP_VERSION, DATA_DIR, app, init_db, load_config
 
 
 HOST = "127.0.0.1"
+BIND_HOST = "0.0.0.0"
 PREFERRED_PORT = 8765
 STARTUP_LOG = DATA_DIR / "startup.log"
+
+
+def local_lan_ip() -> str:
+    """Mejor esfuerzo para mostrar al usuario la IP de esta compu en la red local."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
 
 
 def find_port(start: int = PREFERRED_PORT, attempts: int = 50) -> int:
     for port in range(start, start + attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                s.bind((HOST, port))
+                s.bind((BIND_HOST, port))
                 return port
             except OSError:
                 continue
@@ -119,7 +130,7 @@ def main() -> None:
     load_config()
 
     port = find_port()
-    config = uvicorn.Config(app, host=HOST, port=port, log_level="warning", access_log=False)
+    config = uvicorn.Config(app, host=BIND_HOST, port=port, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None
     server_errors: list[str] = []
@@ -133,6 +144,7 @@ def main() -> None:
     thread = threading.Thread(target=run_server, daemon=True, name="SorprezzLocalServer")
     thread.start()
     wait_until_ready(port, thread, server_errors, timeout=60.0)
+    _write_startup_log(f"Servidor accesible en la red local en: http://{local_lan_ip()}:{port}")
 
     bridge = DesktopBridge()
     window = webview.create_window(
