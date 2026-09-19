@@ -1,5 +1,30 @@
 SORPREZZ ASSET MANAGER V1.9.1
 
+PAPELERA COMPARTIDA Y CONFIRMACIONES
+----------------------------------
+- El cierre de las ventanas tiene su propia fila. Enviar una colección o recurso
+  a la Papelera se hace desde una zona separada al pie de sus detalles.
+- Cada eliminación de contenido pide confirmación con Cancelar como opción inicial.
+- La sección Papelera permite buscar, restaurar o eliminar definitivamente recursos,
+  carpetas, archivos, colecciones, copias de colección, etiquetas y listas de carpetas.
+- Se guardan archivos y metadatos en el servidor; todos los usuarios ven la misma
+  Papelera. Los datos persisten al reiniciar y no se borran automáticamente.
+- Restaurar conserva etiquetas y clasificación. Nunca sobrescribe un archivo o
+  registro nuevo: si hay un conflicto, el elemento permanece en la Papelera.
+- Si se eliminaron un hijo y su recurso/colección por separado, restaura primero
+  el recurso/colección. Para purgar el padre, resuelve primero sus hijos separados.
+- Eliminar definitivamente exige otra confirmación y no afecta a los originales
+  de Biblioteca al borrar copias de colecciones. Sincronizar no vuelve a agregar
+  automáticamente una copia retirada, incluso si ya se vació de la Papelera.
+- Las operaciones de escritura se coordinan para evitar que dos usuarios borren,
+  importen o restauren el mismo contenido a la vez. Una descarga activa debe terminar
+  antes de enviar su recurso o sus archivos a la Papelera.
+- Los archivos retirados se guardan en:
+  %LOCALAPPDATA%\SorprezzAssetManager\data\Papelera
+  Conserva esta carpeta junto con sorprezz.db al respaldar los datos del servidor.
+- La Papelera recoge eliminaciones realizadas desde Sorprezz. No recupera borrados
+  definitivos anteriores ni intercepta eliminaciones hechas directamente en Windows.
+
 CORRECCIÓN DE SINCRONIZACIÓN EN RED
 ---------------------------------
 - La aplicación instalada y los navegadores deben conectarse al mismo servidor.

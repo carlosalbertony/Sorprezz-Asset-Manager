@@ -20,6 +20,7 @@
       <button class="nav" data-page="collections">▣ <span>Colecciones</span></button>
       <button class="nav" data-page="organization">⌘ <span>Organización</span></button>
       <button class="nav" data-page="settings">⚙ <span>Configuración</span></button>
+      <button class="nav" data-page="trash">♲ <span>Papelera</span></button>
     </nav>
     <div class="sidebar-bottom">
       <button class="sidebar-sync" onclick="syncAllResources()">↻ <span>Sincronizar todo</span></button>
@@ -278,6 +279,14 @@
       <div class="panel"><div id="collectionsGrid" class="collection-grid"></div></div>
     </section>
 
+    <section id="page-trash" class="page">
+      <div class="panel">
+        <div class="panel-head"><div><h2>Papelera compartida</h2><p class="muted">Recupera elementos eliminados desde Sorprezz. Se conservan hasta que decidas eliminarlos definitivamente.</p></div><button class="secondary" onclick="loadTrash()">↻ Actualizar</button></div>
+        <label>Buscar en la Papelera<input id="trashSearch" type="search" placeholder="Nombre o ubicación original…" oninput="renderTrash()"></label>
+        <div id="trashList" class="trash-list"></div>
+      </div>
+    </section>
+
     <section id="page-organization" class="page">
       <div class="organization-tabs segmented">
         <button id="orgCategoriesBtn" class="active" onclick="setOrganizationTab('categories')">Categorías</button>
@@ -345,7 +354,15 @@
 <input id="localFilePicker" class="hidden" type="file" multiple onchange="handleLocalImport(this,false)" />
 <input id="localFolderPicker" class="hidden" type="file" multiple webkitdirectory directory onchange="handleLocalImport(this,true)" />
 
-<div id="modal" class="modal hidden"><div class="modal-card"><button class="modal-x" onclick="closeModal()">×</button><div id="modalContent"></div></div></div>
+<div id="modal" class="modal hidden"><div class="modal-card"><div class="modal-close-bar"><button class="modal-x" aria-label="Cerrar ventana" onclick="closeModal()">×</button></div><div id="modalContent"></div></div></div>
+<dialog id="deleteConfirm" class="delete-confirm" aria-labelledby="deleteConfirmTitle" aria-describedby="deleteConfirmMessage">
+  <h2 id="deleteConfirmTitle">¿Enviar a la Papelera?</h2>
+  <p id="deleteConfirmMessage"></p>
+  <div class="confirm-actions">
+    <button id="deleteConfirmCancel" class="secondary" autofocus onclick="document.getElementById('deleteConfirm').close('cancel')">Cancelar</button>
+    <button id="deleteConfirmAccept" class="danger" onclick="document.getElementById('deleteConfirm').close('confirm')">Enviar a la Papelera</button>
+  </div>
+</dialog>
 <div id="toast" class="toast hidden"></div>
 <script src="/static/app.js"></script>
 </body>

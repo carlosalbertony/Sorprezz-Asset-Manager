@@ -18,6 +18,7 @@ import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import wraps
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
@@ -26,6 +27,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
+from trash_store import TrashStore
 
 APP_NAME = "Sorprezz Asset Manager"
 APP_VERSION = "1.9.1"
@@ -61,7 +63,15 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 executor = ThreadPoolExecutor(max_workers=2)
 active_downloads: dict[int, dict] = {}
 active_lock = threading.Lock()
-index_lock = threading.Lock()
+index_lock = threading.RLock()
+
+
+def library_write(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with index_lock:
+            return fn(*args, **kwargs)
+    return locked
 
 
 def now_iso() -> str:
@@ -82,6 +92,28 @@ def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30, factory=DatabaseConnection)
     con.row_factory = sqlite3.Row
     return con
+
+
+def trash_store():
+    return TrashStore(db, DATA_DIR / 'Papelera')
+
+
+def trash_rows(table, where, args):
+    with db() as con:
+        return [dict(row) for row in con.execute(f'SELECT * FROM {table} WHERE {where}', args)]
+
+
+def require_idle_resource(rid):
+    with active_lock:
+        if rid in active_downloads:
+            raise HTTPException(409, 'Espera a que termine la descarga antes de enviar este contenido a la Papelera')
+
+
+def update_resource_counts(rid):
+    with db() as con:
+        con.execute('''UPDATE resources SET file_count=(SELECT COUNT(*) FROM files WHERE resource_id=?),
+                       total_bytes=(SELECT COALESCE(SUM(size_bytes),0) FROM files WHERE resource_id=?),
+                       updated_at=? WHERE id=?''', (rid, rid, now_iso(), rid))
 
 
 def canonical_rel_path(value: str | None) -> str:
@@ -166,6 +198,22 @@ def init_db() -> None:
         con.executescript(
             """
             PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS trash (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                original_path TEXT,
+                stored_path TEXT,
+                metadata TEXT NOT NULL,
+                deleted_at TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'ready'
+            );
+            CREATE TABLE IF NOT EXISTS collection_exclusions (
+                collection_id INTEGER NOT NULL,
+                resource_id INTEGER NOT NULL,
+                source_rel_path TEXT NOT NULL,
+                PRIMARY KEY(collection_id, resource_id, source_rel_path)
+            );
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -666,7 +714,7 @@ def sync_resource_to_selected_collection(rid: int) -> dict:
     if not refs:
         return {"added": 0, "skipped": 0}
     try:
-        return add_assets_to_collection(int(row["collection_id"]), refs)
+        return add_assets_to_collection(int(row["collection_id"]), refs, respect_removed=True)
     except Exception:
         # La descarga nunca se marca como fallida solo porque la colección no pudo sincronizarse.
         return {"added": 0, "skipped": len(refs)}
@@ -1368,6 +1416,8 @@ def _background_repair_existing_downloads() -> None:
 def startup():
     init_db()
     load_config()
+    with index_lock:
+        trash_store().recover()
     threading.Thread(
         target=_background_repair_existing_downloads,
         daemon=True,
@@ -1378,6 +1428,66 @@ def startup():
 @app.get("/")
 def home():
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get('/api/trash')
+def trash_list():
+    with db() as con:
+        rows = [dict(r) for r in con.execute(
+            'SELECT id,kind,name,original_path,deleted_at,state FROM trash ORDER BY deleted_at DESC,id')]
+    return rows
+
+
+@app.post('/api/trash/{entry_id}/restore')
+@library_write
+def trash_restore(entry_id: str):
+    entry = trash_store().get(entry_id)
+    metadata = json.loads(entry['metadata'])
+    destination = None
+    rid = metadata.get('resource_id')
+    if rid:
+        if not get_resource(rid):
+            raise HTTPException(409, 'Restaura primero el recurso que contiene este archivo o carpeta')
+        require_idle_resource(rid)
+        _, _, destination = safe_resource_path(rid, metadata['rel_path'])
+    cid = metadata.get('collection_id')
+    if cid and not trash_rows('collections', 'id=?', (cid,)):
+        raise HTTPException(409, 'Restaura primero la colección que contiene esta copia')
+    trash_store().restore(entry_id, destination)
+    if entry['kind'] == 'collection_item':
+        with db() as con:
+            for item in metadata['tables']['collection_items']:
+                con.execute('DELETE FROM collection_exclusions WHERE collection_id=? AND resource_id=? AND source_rel_path=?',
+                            (item['collection_id'], item['resource_id'], item['source_rel_path']))
+    if rid:
+        update_resource_counts(rid)
+    return {'ok': True}
+
+
+class TrashPurgeIn(BaseModel):
+    confirmed: bool = False
+
+
+@app.delete('/api/trash/{entry_id}')
+@library_write
+def trash_purge(entry_id: str, payload: TrashPurgeIn):
+    if not payload.confirmed:
+        raise HTTPException(400, 'Confirma la eliminación definitiva')
+    entry = trash_store().get(entry_id)
+    data = json.loads(entry['metadata'])
+    parent = 'resource_id' if entry['kind'] == 'resource' else 'collection_id' if entry['kind'] == 'collection' else None
+    if parent:
+        table = 'resources' if parent == 'resource_id' else 'collections'
+        parent_id = data['tables'][table][0]['id']
+        with db() as con:
+            children = [json.loads(r['metadata']) for r in con.execute('SELECT metadata FROM trash WHERE id<>?', (entry_id,))]
+        if any(child.get(parent) == parent_id for child in children):
+            raise HTTPException(409, 'Hay elementos separados de esta carpeta o colección en la Papelera. Restáuralos o elimínalos primero para no perder su ubicación de recuperación.')
+    trash_store().purge(entry_id)
+    if entry['kind'] == 'collection':
+        with db() as con:
+            con.execute('DELETE FROM collection_exclusions WHERE collection_id=?', (data['tables']['collections'][0]['id'],))
+    return {'ok': True}
 
 
 @app.get("/api/google/status")
@@ -1574,6 +1684,7 @@ def analyze(payload: ResourceIn):
 
 
 @app.post("/api/resources")
+@library_write
 def resource_create(payload: ResourceIn):
     name = payload.name.strip()
     url = payload.url.strip()
@@ -1631,6 +1742,7 @@ def resource_create(payload: ResourceIn):
 
 
 @app.post("/api/resources/manual")
+@library_write
 def resource_create_manual(payload: ManualResourceIn):
     name = payload.name.strip()
     if not name:
@@ -1676,6 +1788,7 @@ def resource_create_manual(payload: ManualResourceIn):
 
 
 @app.put("/api/resources/{rid}/metadata")
+@library_write
 def resource_update_metadata(rid: int, payload: ResourceMetadataIn):
     r = get_resource(rid)
     if not r:
@@ -1810,6 +1923,7 @@ def resource_detail(rid: int):
 
 
 @app.post("/api/resources/{rid}/download")
+@library_write
 def resource_download(rid: int):
     r = get_resource(rid)
     if not r:
@@ -1817,11 +1931,18 @@ def resource_download(rid: int):
     with active_lock:
         if rid in active_downloads:
             return {"ok": True, "message": "La descarga ya está activa"}
-    executor.submit(download_worker, rid)
+        active_downloads[rid] = {"progress": 0, "message": "Descarga en cola..."}
+    try:
+        executor.submit(download_worker, rid)
+    except Exception:
+        with active_lock:
+            active_downloads.pop(rid, None)
+        raise
     return {"ok": True, "message": "Descarga iniciada"}
 
 
 @app.post("/api/resources/{rid}/rescan")
+@library_write
 def resource_rescan(rid: int):
     r = get_resource(rid)
     if not r or not r.get("local_path"):
@@ -1848,6 +1969,7 @@ def resource_rescan(rid: int):
 
 
 @app.post("/api/resources/rescan-all")
+@library_write
 def resources_rescan_all():
     """Reindexa toda la Biblioteca preservando categorías, etiquetas y colecciones."""
     backup_path = backup_metadata_db('sync')
@@ -2035,6 +2157,7 @@ def library_file_download(path: str):
 
 
 @app.post("/api/resources/{rid}/folders")
+@library_write
 def resource_create_folder(rid: int, payload: FolderCreateIn):
     name = slug_folder(payload.name)
     if not name or name == "Sin_nombre":
@@ -2051,6 +2174,7 @@ def resource_create_folder(rid: int, payload: FolderCreateIn):
 
 
 @app.post("/api/resources/{rid}/files/organize")
+@library_write
 def resource_organize_files(rid: int, payload: FileOrganizeIn):
     if payload.operation not in {"copy", "move"}:
         raise HTTPException(400, "Operación no válida")
@@ -2103,6 +2227,7 @@ def resource_organize_files(rid: int, payload: FileOrganizeIn):
 
 
 @app.post("/api/resources/{rid}/rename")
+@library_write
 def resource_rename(rid: int, payload: RenameIn):
     _, root, src = safe_resource_path(rid, payload.path)
     if not src.exists():
@@ -2163,7 +2288,8 @@ def resource_rename(rid: int, payload: RenameIn):
 
 
 @app.post("/api/resources/{rid}/files/upload")
-async def resource_upload_files(
+@library_write
+def resource_upload_files(
     rid: int,
     target_path: str = Form(""),
     rel_paths_json: str = Form("[]"),
@@ -2199,7 +2325,7 @@ async def resource_upload_files(
             destination = unique_destination(destination)
             with destination.open("wb") as out:
                 while True:
-                    chunk = await upload.read(1024 * 1024)
+                    chunk = upload.file.read(1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
@@ -2208,7 +2334,7 @@ async def resource_upload_files(
             skipped += 1
         finally:
             try:
-                await upload.close()
+                upload.file.close()
             except Exception:
                 pass
 
@@ -2224,6 +2350,7 @@ async def resource_upload_files(
 
 
 @app.post("/api/resources/{rid}/files/import")
+@library_write
 def resource_import_files(rid: int, payload: ImportFilesIn):
     if not payload.paths:
         raise HTTPException(400, "Selecciona al menos un archivo")
@@ -2252,35 +2379,40 @@ def resource_import_files(rid: int, payload: ImportFilesIn):
 
 
 @app.post("/api/resources/{rid}/items/delete")
+@library_write
 def resource_delete_items(rid: int, payload: DeleteItemsIn):
     if not payload.paths:
         raise HTTPException(400, "Selecciona al menos un elemento")
+    require_idle_resource(rid)
     _, root = resource_root_path(rid)
-    deleted = 0
-    normalized = []
+    targets = {}
     for rel in payload.paths:
         _, _, target = safe_resource_path(rid, rel)
         if target == root:
-            continue
+            raise HTTPException(400, "Para eliminar el recurso completo, usa sus detalles")
         if not target.exists():
-            continue
-        rel_norm = str(target.relative_to(root)).replace("\\", "/")
-        normalized.append(rel_norm)
+            raise HTTPException(404, "Uno de los elementos ya no existe; actualiza la carpeta")
+        targets[canonical_rel_path(str(target.relative_to(root)))] = target
+    # A selected parent already includes its children; never trash a child twice.
+    roots = [rel for rel in targets if not any(rel.startswith(parent + '/') for parent in targets if parent != rel)]
+    entries = []
+    errors = []
+    for rel in roots:
+        target = targets[rel]
+        tables = {}
+        for table in ('files', 'file_tags', 'folder_tags'):
+            tables[table] = [row for row in trash_rows(table, 'resource_id=?', (rid,))
+                             if row['rel_path'] == rel or row['rel_path'].startswith(rel + '/')]
         try:
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-            deleted += 1
-        except OSError:
-            continue
-    if normalized:
-        with db() as con:
-            for rel in normalized:
-                con.execute("DELETE FROM file_tags WHERE resource_id=? AND (rel_path=? OR rel_path LIKE ?)", (rid, rel, rel + "/%"))
-                con.execute("DELETE FROM folder_tags WHERE resource_id=? AND (rel_path=? OR rel_path LIKE ?)", (rid, rel, rel + "/%"))
-    count, total = index_resource(rid, root)
-    return {"ok": True, "deleted": deleted, "file_count": count, "total_bytes": total}
+            entries.append(trash_store().put('folder' if target.is_dir() else 'file', target.name,
+                           tables, target, resource_id=rid, rel_path=rel))
+        except HTTPException as exc:
+            errors.append({'name': target.name, 'detail': exc.detail})
+    update_resource_counts(rid)
+    r = get_resource(rid)
+    return {'ok': not errors, 'deleted': len(entries), 'trash_ids': entries, 'errors': errors,
+            'file_count': r['file_count'], 'total_bytes': r['total_bytes']}
+
 
 @app.post("/api/resources/{rid}/files/zip")
 def resource_zip_selection(rid: int, payload: SelectionZipIn):
@@ -2377,16 +2509,15 @@ def tag_create(payload: TagIn):
 
 
 @app.delete("/api/tags/{tag_id}")
+@library_write
 def tag_delete(tag_id: int):
-    with db() as con:
-        exists = con.execute("SELECT id FROM tags WHERE id=?", (tag_id,)).fetchone()
-        if not exists:
-            raise HTTPException(404, "Etiqueta no encontrada")
-        con.execute("DELETE FROM resource_tags WHERE tag_id=?", (tag_id,))
-        con.execute("DELETE FROM folder_tags WHERE tag_id=?", (tag_id,))
-        con.execute("DELETE FROM file_tags WHERE tag_id=?", (tag_id,))
-        con.execute("DELETE FROM tags WHERE id=?", (tag_id,))
-    return {"ok": True}
+    rows = trash_rows('tags', 'id=?', (tag_id,))
+    if not rows:
+        raise HTTPException(404, "Etiqueta no encontrada")
+    tables = {'tags': rows}
+    for table in ('resource_tags', 'folder_tags', 'file_tags'):
+        tables[table] = trash_rows(table, 'tag_id=?', (tag_id,))
+    return {'ok': True, 'trash_id': trash_store().put('tag', rows[0]['name'], tables)}
 
 
 @app.get("/api/resources/{rid}/tags")
@@ -2398,6 +2529,7 @@ def resource_tags_get(rid: int):
 
 
 @app.put("/api/resources/{rid}/tags")
+@library_write
 def resource_tags_set(rid: int, payload: TagAssignIn):
     if not get_resource(rid):
         raise HTTPException(404, "Recurso no encontrado")
@@ -2421,6 +2553,7 @@ def folder_tags_get(rid: int, path: str = ""):
 
 
 @app.put("/api/resources/{rid}/folder-tags")
+@library_write
 def folder_tags_set(rid: int, payload: FolderTagAssignIn):
     _, root, target = safe_resource_path(rid, payload.path)
     if not target.exists() or not target.is_dir():
@@ -2450,6 +2583,7 @@ def file_tags_get(rid: int, path: str):
 
 
 @app.put("/api/resources/{rid}/file-tags")
+@library_write
 def file_tags_set(rid: int, payload: FileTagAssignIn):
     _, _, target = safe_resource_path(rid, payload.path)
     if not target.exists() or not target.is_file():
@@ -2464,6 +2598,7 @@ def file_tags_set(rid: int, payload: FileTagAssignIn):
 
 
 @app.put("/api/resources/{rid}/file-tags/bulk")
+@library_write
 def file_tags_bulk(rid: int, payload: FileTagBulkIn):
     if payload.mode not in {"add", "remove", "replace"}:
         raise HTTPException(400, "Modo de etiquetas no válido")
@@ -2496,6 +2631,7 @@ def file_tags_bulk(rid: int, payload: FileTagBulkIn):
 
 
 @app.post("/api/resources/{rid}/tags/apply-to-files")
+@library_write
 def tag_apply_to_files(rid: int, payload: TagApplyFilesIn):
     r = get_resource(rid)
     if not r:
@@ -2621,6 +2757,7 @@ def unique_directory(path: Path) -> Path:
     raise RuntimeError("No se pudo generar una carpeta disponible")
 
 
+@library_write
 def create_collection_record(name: str, category_id: int, subcategory_id: Optional[int] = None, description: str = "") -> dict:
     name = name.strip()
     if not name:
@@ -2664,18 +2801,27 @@ def create_collection_record(name: str, category_id: int, subcategory_id: Option
         "description": description.strip(), "physical_path": str(physical),
     }
 
-def add_assets_to_collection(collection_id: int, items: list[dict]) -> dict:
+@library_write
+def add_assets_to_collection(collection_id: int, items: list[dict], respect_removed: bool = False) -> dict:
     with db() as con:
         col = con.execute("SELECT * FROM collections WHERE id=?", (collection_id,)).fetchone()
+        trashed = [json.loads(r['metadata']) for r in con.execute("SELECT metadata FROM trash WHERE kind='collection_item'")]
+        excluded = {(r['collection_id'], r['resource_id'], r['source_rel_path']) for r in con.execute(
+            'SELECT * FROM collection_exclusions WHERE collection_id=?', (collection_id,))} if respect_removed else set()
     if not col:
         raise HTTPException(404, "Colección no encontrada")
     dest_dir = Path(col["physical_path"])
     dest_dir.mkdir(parents=True, exist_ok=True)
     added = []
     skipped = 0
+    trashed_refs = {(r['collection_id'], r['resource_id'], r['source_rel_path'])
+                    for entry in trashed for r in entry['tables']['collection_items']}
     for ref in items:
         rid = int(ref.get("resource_id") or 0)
         rel = str(ref.get("path") or "")
+        if (collection_id, rid, rel) in trashed_refs or (collection_id, rid, rel) in excluded:
+            skipped += 1
+            continue
         if not rid or not rel:
             skipped += 1
             continue
@@ -2703,6 +2849,9 @@ def add_assets_to_collection(collection_id: int, items: list[dict]) -> dict:
                 (collection_id, rid, rel, str(dst), src.stem, now_iso()),
             )
             item_id = cur.lastrowid
+            if not respect_removed:
+                con.execute('DELETE FROM collection_exclusions WHERE collection_id=? AND resource_id=? AND source_rel_path=?',
+                            (collection_id, rid, rel))
         added.append({"id": item_id, "resource_id": rid, "source_rel_path": rel, "copied_path": str(dst)})
     with db() as con:
         con.execute("UPDATE collections SET updated_at=? WHERE id=?", (now_iso(), collection_id))
@@ -2787,6 +2936,7 @@ def collection_add_items(cid: int, payload: CollectionAddItemsIn):
 
 
 @app.post("/api/collections/from-tag")
+@library_write
 def collection_create_from_tag(payload: CollectionFromTagIn):
     with db() as con:
         tag = con.execute("SELECT id,name FROM tags WHERE id=?", (payload.tag_id,)).fetchone()
@@ -2859,34 +3009,33 @@ def collection_zip(cid: int, request: Request):
 
 
 @app.delete("/api/collections/{cid}/items/{item_id}")
+@library_write
 def collection_remove_item(cid: int, item_id: int, delete_copy: bool = True):
+    rows = trash_rows('collection_items', 'id=? AND collection_id=?', (item_id, cid))
+    if not rows:
+        raise HTTPException(404, "Elemento no encontrado")
+    row = rows[0]
+    entry = trash_store().put('collection_item', Path(row['copied_path']).name,
+                             {'collection_items': rows}, row['copied_path'] if delete_copy else None,
+                             collection_id=cid)
     with db() as con:
-        row = con.execute("SELECT copied_path FROM collection_items WHERE id=? AND collection_id=?", (item_id, cid)).fetchone()
-        if not row:
-            raise HTTPException(404, "Elemento no encontrado")
-        con.execute("DELETE FROM collection_items WHERE id=?", (item_id,))
-        con.execute("UPDATE collections SET updated_at=? WHERE id=?", (now_iso(), cid))
-    if delete_copy:
-        p = Path(row["copied_path"])
-        if p.exists() and _is_within(p, library_root() / "Colecciones_Web"):
-            try: p.unlink()
-            except OSError: pass
-    return {"ok": True}
+        if row['resource_id'] is not None and row['source_rel_path'] is not None:
+            con.execute('INSERT OR IGNORE INTO collection_exclusions VALUES (?,?,?)',
+                        (cid, row['resource_id'], row['source_rel_path']))
+        con.execute('UPDATE collections SET updated_at=? WHERE id=?', (now_iso(), cid))
+    return {'ok': True, 'trash_id': entry}
 
 
 @app.delete("/api/collections/{cid}")
+@library_write
 def collection_delete(cid: int, delete_files: bool = True):
-    with db() as con:
-        row = con.execute("SELECT physical_path FROM collections WHERE id=?", (cid,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Colección no encontrada")
-        con.execute("DELETE FROM collection_items WHERE collection_id=?", (cid,))
-        con.execute("DELETE FROM collections WHERE id=?", (cid,))
-    if delete_files:
-        p = Path(row["physical_path"])
-        if p.exists() and _is_within(p, library_root() / "Colecciones_Web"):
-            shutil.rmtree(p, ignore_errors=True)
-    return {"ok": True}
+    rows = trash_rows('collections', 'id=?', (cid,))
+    if not rows:
+        raise HTTPException(404, "Colección no encontrada")
+    tables = {'collections': rows, 'collection_items': trash_rows('collection_items', 'collection_id=?', (cid,))}
+    entry = trash_store().put('collection', rows[0]['name'], tables,
+                             rows[0]['physical_path'] if delete_files else None)
+    return {'ok': True, 'trash_id': entry}
 
 
 def normalize_template_folder_path(raw: str) -> str:
@@ -2938,6 +3087,7 @@ def folder_template_create(payload: FolderTemplateIn):
 
 
 @app.put("/api/folder-templates/{template_id}")
+@library_write
 def folder_template_update(template_id: int, payload: FolderTemplateIn):
     name = payload.name.strip()
     folders = []
@@ -2961,16 +3111,18 @@ def folder_template_update(template_id: int, payload: FolderTemplateIn):
 
 
 @app.delete("/api/folder-templates/{template_id}")
+@library_write
 def folder_template_delete(template_id: int):
-    with db() as con:
-        con.execute("DELETE FROM folder_template_items WHERE template_id=?", (template_id,))
-        cur = con.execute("DELETE FROM folder_templates WHERE id=?", (template_id,))
-    if cur.rowcount == 0:
+    rows = trash_rows('folder_templates', 'id=?', (template_id,))
+    if not rows:
         raise HTTPException(404, "Lista no encontrada")
-    return {"ok": True}
+    tables = {'folder_templates': rows,
+              'folder_template_items': trash_rows('folder_template_items', 'template_id=?', (template_id,))}
+    return {'ok': True, 'trash_id': trash_store().put('template', rows[0]['name'], tables)}
 
 
 @app.post("/api/resources/{rid}/folder-templates/{template_id}/apply")
+@library_write
 def folder_template_apply(rid: int, template_id: int, payload: FolderTemplateApplyIn):
     _, root, parent = safe_resource_path(rid, payload.parent_path)
     if not parent.exists() or not parent.is_dir():
@@ -3023,6 +3175,7 @@ def catalog_items(q: str = "", status: str = "", product_type: str = ""):
 
 
 @app.post("/api/catalog")
+@library_write
 def catalog_create(payload: CatalogCreateIn):
     r, root, src = safe_resource_path(payload.resource_id, payload.source_rel_path)
     if not src.exists() or not src.is_file():
@@ -3081,6 +3234,7 @@ def catalog_detail(cid: int):
 
 
 @app.put("/api/catalog/{cid}")
+@library_write
 def catalog_update(cid: int, payload: CatalogUpdateIn):
     with db() as con:
         exists = con.execute("SELECT id FROM catalog_items WHERE id=?", (cid,)).fetchone()
@@ -3112,20 +3266,13 @@ def catalog_open(cid: int):
 
 
 @app.delete("/api/catalog/{cid}")
-def catalog_delete(cid: int, delete_copy: bool = False):
-    with db() as con:
-        row = con.execute("SELECT catalog_path FROM catalog_items WHERE id=?", (cid,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Elemento de catálogo no encontrado")
-        con.execute("DELETE FROM catalog_items WHERE id=?", (cid,))
-    if delete_copy and row["catalog_path"]:
-        p = Path(row["catalog_path"])
-        if p.exists() and _is_within(p, library_root() / "Catalogo_Sorprezz"):
-            try:
-                p.unlink()
-            except OSError:
-                pass
-    return {"ok": True}
+@library_write
+def catalog_delete(cid: int, delete_copy: bool = True):
+    rows = trash_rows('catalog_items', 'id=?', (cid,))
+    if not rows:
+        raise HTTPException(404, "Elemento de catálogo no encontrado")
+    return {'ok': True, 'trash_id': trash_store().put('catalog', rows[0]['title'],
+            {'catalog_items': rows}, rows[0]['catalog_path'] if delete_copy else None)}
 
 
 @app.post("/api/catalog/export")
@@ -3189,18 +3336,18 @@ def resource_zip(rid: int):
 
 
 @app.delete("/api/resources/{rid}")
-def resource_delete(rid: int, delete_files: bool = False):
-    r = get_resource(rid)
-    if not r:
+@library_write
+def resource_delete(rid: int, delete_files: bool = True):
+    require_idle_resource(rid)
+    rows = trash_rows('resources', 'id=?', (rid,))
+    if not rows:
         raise HTTPException(404, "Recurso no encontrado")
-    if delete_files and r.get("local_path"):
-        p = Path(r["local_path"])
-        if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
-    with db() as con:
-        con.execute("DELETE FROM files WHERE resource_id=?", (rid,))
-        con.execute("DELETE FROM resources WHERE id=?", (rid,))
-    return {"ok": True}
+    tables = {'resources': rows}
+    for table in ('files', 'resource_tags', 'file_tags', 'folder_tags'):
+        tables[table] = trash_rows(table, 'resource_id=?', (rid,))
+    entry = trash_store().put('resource', rows[0]['name'], tables,
+                             rows[0]['local_path'] if delete_files else None)
+    return {'ok': True, 'trash_id': entry}
 
 
 @app.get("/api/stats")

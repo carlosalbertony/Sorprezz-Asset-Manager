@@ -11,7 +11,9 @@ function setup(){
     if(!elements.has(id)){
       const classes=new Set();
       elements.set(id,{id,value:'',innerHTML:'',textContent:'',disabled:false,
-        addEventListener(){},classList:{contains:c=>classes.has(c),add:c=>classes.add(c),
+        addEventListener(){},focus(){this.focused=true},showModal(){this.open=true},
+        close(value){this.open=false;this.returnValue=value;this.onclose?.()},
+        classList:{contains:c=>classes.has(c),add:c=>classes.add(c),
           remove:c=>classes.delete(c),toggle(c,on){if(on)classes.add(c);else classes.delete(c)}}});
     }
     return elements.get(id);
@@ -133,4 +135,63 @@ test('removed open folder falls back to root and clears unavailable selections',
   await ui.run('refreshSharedView()');
   assert.equal(ui.run('EXPLORER.path'),'');
   assert.equal(ui.run('EXPLORER.selected.size'),0);
+});
+
+test('canceling collection deletion leaves it untouched and focuses Cancel',async()=>{
+  const ui=setup();
+  ui.setHandler(async()=>({id:4,name:'AÑO NUEVO',items:[]}));
+  const pending=ui.run('deleteCollection(4)');
+  await new Promise(setImmediate);
+  assert.equal(ui.element('deleteConfirm').open,true);
+  assert.equal(ui.element('deleteConfirmCancel').focused,true);
+  assert.ok(ui.calls.every(c=>c.opts.method!=='DELETE'));
+  ui.element('deleteConfirm').close('cancel');
+  await pending;
+  assert.ok(ui.calls.every(c=>c.opts.method!=='DELETE'));
+  assert.equal(ui.run('DELETE_CONFIRM_PENDING'),false);
+});
+
+test('collection deletion only runs after explicitly accepting the dialog',async()=>{
+  const ui=setup();
+  ui.setHandler(async path=>path==='/api/collections/4'?{id:4,name:'AÑO NUEVO',items:[]}:[]);
+  const pending=ui.run('deleteCollection(4)');
+  await new Promise(setImmediate);
+  assert.match(ui.element('deleteConfirmMessage').textContent,/AÑO NUEVO/);
+  ui.element('deleteConfirm').close('confirm');
+  await pending;
+  assert.equal(ui.calls.filter(c=>c.opts.method==='DELETE').length,1);
+  assert.equal(ui.calls.find(c=>c.opts.method==='DELETE').path,'/api/collections/4');
+});
+
+test('canceling copy removal sends no deletion request',async()=>{
+  const ui=setup();
+  const pending=ui.run('removeCollectionItem(4,7)');
+  assert.equal(ui.element('deleteConfirm').open,true);
+  ui.element('deleteConfirm').close('cancel');
+  await pending;
+  assert.equal(ui.calls.length,0);
+});
+
+test('permanent deletion has a separate warning and explicit API confirmation',async()=>{
+  const ui=setup();
+  ui.run(`TRASH_ITEMS=[{id:'test-entry',name:'Copia',kind:'collection_item',state:'ready',deleted_at:'2026-09-18T12:00:00'}]`);
+  ui.setHandler(async path=>path==='/api/trash'?[]:{ok:true});
+  const pending=ui.run('purgeTrash("test-entry")');
+  assert.equal(ui.calls.length,0);
+  assert.equal(ui.element('deleteConfirmTitle').textContent,'¿Eliminar definitivamente?');
+  assert.match(ui.element('deleteConfirmMessage').textContent,/no se puede deshacer/);
+  ui.element('deleteConfirm').close('confirm');
+  await pending;
+  const deletion=ui.calls.find(c=>c.opts.method==='DELETE');
+  assert.equal(deletion.path,'/api/trash/test-entry');
+  assert.deepEqual(JSON.parse(deletion.opts.body),{confirmed:true});
+});
+
+test('collection deletion control is placed after the grid in its own footer',async()=>{
+  const ui=setup();
+  ui.setHandler(async()=>({id:4,name:'AÑO NUEVO',category:'Camisetas',items:[]}));
+  await ui.run('collectionDetail(4)');
+  const html=ui.element('modalContent').innerHTML;
+  assert.ok(html.indexOf('modal-danger-zone')>html.indexOf('collection-items-grid'));
+  assert.ok(html.indexOf('deleteCollection(4)')>html.indexOf('modal-danger-zone'));
 });
