@@ -1,4 +1,23 @@
-SORPREZZ ASSET MANAGER V1.9.1
+SORPREZZ ASSET MANAGER V1.9.2
+
+V1.9.2 - COLECCIONES COMPARTIDAS Y CAMBIOS DESDE WINDOWS
+-----------------------------------------------------
+- OneDrive no es necesario para compartir la aplicación. El servidor sigue siendo
+  la computadora principal, y todos usan su misma biblioteca a través del navegador.
+- La ubicación del ejecutable no decide qué imágenes se ven: cada colección usa su
+  carpeta física registrada. Sus detalles y el explorador ahora muestran esa ruta.
+- Las colecciones detectan archivos copiados, movidos, renombrados, reemplazados o
+  eliminados desde Windows, incluyendo subcarpetas. No hace falta volver a importarlos.
+- Las ventanas de colecciones abiertas se actualizan cada 3 segundos mientras la
+  pestaña está visible; las confirmaciones y los formularios permanecen protegidos.
+- Sincronizar todo también revisa las colecciones. Cada colección tiene además un
+  botón propio para sincronizar y muestra cualquier error de lectura de su carpeta.
+- Abrir en Windows abre la carpeta en la computadora principal cuando la solicitud
+  proviene de ella. Desde otra computadora, Explorar carpeta abre una vista navegable
+  dentro del programa con subcarpetas, imágenes y descarga de archivos.
+- No se vuelve a crear automáticamente una copia que se haya quitado desde Windows.
+  Las eliminaciones hechas desde Sorprezz siguen pasando por la Papelera compartida.
+- El instalador actualizado se llama Sorprezz-Asset-Manager-Setup-v1.9.2.exe.
 
 PAPELERA COMPARTIDA Y CONFIRMACIONES
 ----------------------------------
@@ -139,7 +158,7 @@ Documents\SorprezzLibrary
 
 ACTUALIZAR DESDE V1.8.x
 -----------------------
-Instalar V1.9.1 encima de la versión anterior. No desinstalar ni borrar la Biblioteca.
+Instalar V1.9.2 encima de la versión anterior. No desinstalar ni borrar la Biblioteca.
 La migración agrega de forma no destructiva los campos de Google Drive API y la tabla de cuentas.
 
 ARCHIVOS QUE CAMBIAN EN V1.9.1

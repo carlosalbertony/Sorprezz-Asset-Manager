@@ -21,11 +21,17 @@ let ASSETS_REQUEST=0;
 let TRASH_ITEMS=[];
 let TRASH_BUSY=new Set();
 let DELETE_CONFIRM_PENDING=false;
+let COLLECTION_DETAIL_ID=null;
+let COLLECTION_DETAIL_REQUEST=0;
+let COLLECTION_BROWSER={id:null,path:'',signature:''};
+let COLLECTION_BROWSER_REQUEST=0;
+let COLLECTION_BROWSER_NAVIGATING=0;
 const pages={
   dashboard:['Inicio','Organiza tus imágenes y recursos desde un solo lugar.'],
   downloads:['Agregar material','Incorpora material desde Google Drive o crea una carpeta manual.'],
   library:['Biblioteca','Busca, visualiza y administra todos los recursos e imágenes.'],
   collections:['Colecciones','Agrupa imágenes de distintos recursos sin modificar los originales.'],
+  'collection-browser':['Explorador de colección','Navega por las carpetas y archivos compartidos de esta colección.'],
   organization:['Organización','Administra categorías, subcategorías y etiquetas.'],
   settings:['Configuración','Almacenamiento y utilidades de la aplicación.'],
   trash:['Papelera','Recupera contenido eliminado o bórralo definitivamente.']
@@ -37,6 +43,7 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 function fmtBytes(n){n=Number(n||0);if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];let i=Math.min(u.length-1,Math.floor(Math.log(n)/Math.log(1024)));return (n/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i]}
 function statusLabel(s){return {pendiente:'Pendiente',descargando:'Descargando',completado:'Completado',parcial:'Completado',incompleto:'Incompleto',error:'Con error'}[s]||s}
 function go(p){
+  if(p!=='collection-browser')COLLECTION_BROWSER_REQUEST++;
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.nav').forEach(x=>x.classList.toggle('active',x.dataset.page===p));
   const page=document.getElementById('page-'+p);if(!page)return;
@@ -408,7 +415,7 @@ async function detail(id){
     document.getElementById('modal').classList.remove('hidden')
   }catch(e){toast(e.message)}
 }
-function closeModal(){document.getElementById('modal').classList.add('hidden')}
+function closeModal(){COLLECTION_DETAIL_ID=null;COLLECTION_DETAIL_REQUEST++;document.getElementById('modal').classList.add('hidden')}
 
 // EXPLORADOR
 async function loadExplorerResources(preselect=null){try{const rs=(await api('/api/resources')).filter(r=>r.local_path);const sel=document.getElementById('explorerResource');const keep=preselect||sel.value;sel.innerHTML='<option value="">Selecciona un recurso...</option>'+rs.map(r=>`<option value="${r.id}">${esc(r.name)} · ${r.file_count} archivos</option>`).join('');if(keep)sel.value=String(keep);if(keep&&sel.value)await selectExplorerResource()}catch(e){toast(e.message)}}
@@ -657,7 +664,7 @@ async function loadCollections(){
     COLLECTIONS=await api('/api/collections'+(q?`?q=${encodeURIComponent(q)}`:''));
     const el=document.getElementById('collectionsGrid');if(!el)return;
     el.innerHTML=COLLECTIONS.length
-      ?COLLECTIONS.map(c=>`<div class="collection-card" onclick="collectionDetail(${c.id})"><div class="collection-folder">📁</div><div><h3>${esc(c.name)}</h3><p>${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''}</p><span>${c.item_count} archivos · ${fmtBytes(c.total_bytes)}</span></div><div class="collection-actions"><button class="mini-link" onclick="event.stopPropagation();openCollectionFolder(${c.id})">Abrir carpeta</button><button class="mini-link" onclick="event.stopPropagation();zipCollection(${c.id})">Descargar ZIP</button></div></div>`).join('')
+      ?COLLECTIONS.map(c=>`<div class="collection-card" onclick="collectionDetail(${c.id})"><div class="collection-folder">📁</div><div><h3>${esc(c.name)}</h3><p>${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''}</p><span>${c.item_count} archivos · ${fmtBytes(c.total_bytes)}</span>${c.sync_error?`<p class="danger-text">${esc(c.sync_error)}</p>`:''}</div><div class="collection-actions"><button class="mini-link" onclick="event.stopPropagation();openCollectionFolder(${c.id})">${c.open_mode==='windows'?'Abrir en Windows':'Explorar carpeta'}</button><button class="mini-link" onclick="event.stopPropagation();zipCollection(${c.id})">Descargar ZIP</button></div></div>`).join('')
       :'<div class="empty">No hay colecciones que coincidan con la búsqueda.</div>';
   }catch(e){toast(e.message)}
 }
@@ -666,14 +673,85 @@ async function openCollectionCreateEmpty(){await loadCategories();document.getEl
 async function createEmptyCollection(){const name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');if(!category_id)return toast('Selecciona una categoría global');try{await api('/api/collections',{method:'POST',body:JSON.stringify({name,category_id,subcategory_id,description})});closeModal();toast('Colección creada');loadCollections()}catch(e){toast(e.message)}}
 async function openCollectionFromTag(){await Promise.all([ensureTags(),loadCategories()]);if(!TAGS.length)return toast('Primero crea una etiqueta');document.getElementById('modalContent').innerHTML=`<h2>Crear colección desde una etiqueta</h2><p class="muted">Se copiarán todos los archivos con la etiqueta elegida. La colección usará las categorías globales de Biblioteca.</p><div class="catalog-form"><label>Etiqueta<select id="collectionSourceTag">${TAGS.map(t=>`<option value="${t.id}">${esc(t.name)} · ${t.files||0} archivos</option>`).join('')}</select></label><label>Nombre de la colección<input id="collectionName" placeholder="Ej. Selección Día de la Madre"></label><label>Categoría global<div class="field-with-action"><select id="collectionCategory" onchange="updateCollectionSubcategorySelect()">${collectionCategoryOptions(CATEGORIES[0]?.id||0)}</select><button type="button" class="secondary compact-btn" onclick="quickCollectionCategory()">+ Nueva</button></div></label><label>Subcategoría<div class="field-with-action"><select id="collectionSubcategory">${collectionSubcategoryOptions(CATEGORIES[0]?.id||0)}</select><button type="button" class="secondary compact-btn" onclick="quickCollectionSubcategory()">+ Nueva</button></div></label><label class="wide">Descripción<input id="collectionDescription" placeholder="Opcional"></label></div><div class="actions"><button class="secondary" onclick="closeModal()">Cancelar</button><button class="primary" onclick="createCollectionFromTag()">Crear carpeta desde etiqueta</button></div>`;document.getElementById('modal').classList.remove('hidden')}
 async function createCollectionFromTag(){const tag_id=Number(document.getElementById('collectionSourceTag').value),name=document.getElementById('collectionName').value.trim(),category_id=Number(document.getElementById('collectionCategory').value||0),subcategory_id=Number(document.getElementById('collectionSubcategory').value||0)||null,description=document.getElementById('collectionDescription').value.trim();if(!name)return toast('Escribe un nombre');if(!category_id)return toast('Selecciona una categoría global');try{const d=await api('/api/collections/from-tag',{method:'POST',body:JSON.stringify({tag_id,name,category_id,subcategory_id,description})});closeModal();toast(`Colección creada con ${d.added} archivos`);await loadCollectionsPage()}catch(e){toast(e.message)}}
-async function collectionDetail(id){try{const c=await api(`/api/collections/${id}`);const items=c.items.map(i=>`<div class="asset-card file-asset"><div class="asset-preview">${i.previewable?`<img src="/api/collections/${id}/items/${i.id}/preview" alt="${esc(i.name)}">`:`<div class="file-icon">${fileIcon(i.ext)}</div>`}</div><div class="asset-name">${esc(i.name)}</div><div class="asset-meta">Origen: ${esc(i.resource_name||'')} · ${fmtBytes(i.size_bytes)}</div><div class="asset-mini-actions"><button class="mini-link danger-text" onclick="removeCollectionItem(${id},${i.id})">Quitar copia</button></div></div>`).join('');document.getElementById('modalContent').innerHTML=`<div class="collection-detail-head"><div><h2>${esc(c.name)}</h2><p class="muted">${esc(c.category)}${c.subcategory?' / '+esc(c.subcategory):''} · ${c.items.length} archivos</p><p class="muted">${esc(c.description||'')}</p></div><div class="quick-actions"><button class="secondary" onclick="openCollectionFolder(${id})">Abrir carpeta</button><button class="secondary" onclick="zipCollection(${id})">↓ Descargar ZIP</button></div></div><div class="asset-grid collection-items-grid">${items||'<div class="empty">Colección vacía.</div>'}</div><div class="modal-danger-zone"><p>Puedes recuperar esta colección desde la Papelera.</p><button class="danger" onclick="deleteCollection(${id})">Enviar colección a la Papelera</button></div>`;document.getElementById('modal').classList.remove('hidden')}catch(e){toast(e.message)}}
-async function openCollectionFolder(id){if(!isLocalHost())return collectionDetail(id);try{await api(`/api/collections/${id}/open`,{method:'POST'})}catch(e){toast(e.message)}}
+function collectionCards(id,items){
+  return items.map(i=>`<div class="asset-card file-asset"><div class="asset-preview">${i.previewable?`<img loading="lazy" src="/api/collections/${id}/items/${i.id}/preview?v=${encodeURIComponent(i.revision||'')}" alt="${esc(i.name)}">`:`<div class="file-icon">${fileIcon(i.ext)}</div>`}</div><div class="asset-name" title="${esc(i.rel_path||i.name)}">${esc(i.name)}</div><div class="asset-meta">${esc(i.resource_name?'Origen: '+i.resource_name:'Archivo local')} · ${fmtBytes(i.size_bytes)}</div><div class="asset-mini-actions">${i.previewable?`<button class="mini-link" onclick="window.open('/api/collections/${id}/items/${i.id}/preview?v=${encodeURIComponent(i.revision||'')}','_blank')">Ver imagen</button>`:''}<a class="mini-link" href="/api/collections/${id}/items/${i.id}/download">Descargar</a><button class="mini-link danger-text" onclick="removeCollectionItem(${id},${i.id})">Quitar copia</button></div></div>`).join('');
+}
+async function collectionDetail(id,background=false){
+  if(background&&COLLECTION_DETAIL_ID!==id)return;
+  COLLECTION_DETAIL_ID=id;
+  const request=++COLLECTION_DETAIL_REQUEST;
+  try{
+    const c=await api(`/api/collections/${id}`);
+    if(request!==COLLECTION_DETAIL_REQUEST||COLLECTION_DETAIL_ID!==id)return;
+    const items=collectionCards(id,c.items)||'<div class="empty">Colección vacía.</div>';
+    const meta=`${c.category}${c.subcategory?' / '+c.subcategory:''} · ${c.items.length} archivos`;
+    if(!background){
+      document.getElementById('modalContent').innerHTML=`<div class="collection-detail-head"><div><h2 id="collectionModalTitle">${esc(c.name)}</h2><p id="collectionModalMeta" class="muted">${esc(meta)}</p><p class="muted">${esc(c.description||'')}</p></div><div class="quick-actions"><button class="secondary" onclick="openCollectionFolder(${id})">${c.open_mode==='windows'?'Abrir en Windows':'Explorar carpeta'}</button><button class="secondary" onclick="syncCollection(${id})">↻ Sincronizar</button><button class="secondary" onclick="zipCollection(${id})">↓ Descargar ZIP</button></div></div><p class="muted collection-location">Carpeta en la computadora principal: ${esc(c.physical_path||'')}</p><p id="collectionModalStatus" class="notice hidden" role="status"></p><p id="collectionModalError" class="notice hidden" role="status"></p><div id="collectionModalItems" class="asset-grid collection-items-grid">${items}</div><div class="modal-danger-zone"><p>Puedes recuperar esta colección desde la Papelera.</p><button class="danger" onclick="deleteCollection(${id})">Enviar colección a la Papelera</button></div>`;
+      document.getElementById('modal').classList.remove('hidden');
+    }else{
+      document.getElementById('collectionModalTitle').textContent=c.name;
+      document.getElementById('collectionModalMeta').textContent=meta;
+      const grid=document.getElementById('collectionModalItems');
+      const signature=JSON.stringify(c.items);
+      if(grid.dataset.signature!==signature){const scroll=grid.scrollTop;grid.innerHTML=items;grid.scrollTop=scroll}
+    }
+    document.getElementById('collectionModalItems').dataset.signature=JSON.stringify(c.items);
+    const error=document.getElementById('collectionModalError');error.textContent=c.sync_error||'';error.classList.toggle('hidden',!c.sync_error);
+  }catch(e){
+    if(request!==COLLECTION_DETAIL_REQUEST)return;
+    if(background){const error=document.getElementById('collectionModalError');error.textContent=e.message;error.classList.remove('hidden')}
+    else toast(e.message);
+  }
+}
+async function openCollectionFolder(id){
+  try{
+    const result=await api(`/api/collections/${id}/open`,{method:'POST'});
+    if(result.mode==='browser')await openCollectionExplorer(id);
+    else toast('Carpeta abierta en el Explorador de Windows');
+  }catch(e){toast(e.message)}
+}
+async function openCollectionExplorer(id){
+  closeModal();COLLECTION_BROWSER={id,path:'',signature:''};
+  go('collection-browser');
+  await browseCollection('');
+}
+async function browseCollection(path='',background=false){
+  if(!COLLECTION_BROWSER.id||(background&&COLLECTION_BROWSER_NAVIGATING))return;
+  const id=COLLECTION_BROWSER.id,request=++COLLECTION_BROWSER_REQUEST;
+  if(!background)COLLECTION_BROWSER_NAVIGATING++;
+  try{
+    let data;
+    try{data=await api(`/api/collections/${id}/browse?path=${encodeURIComponent(path)}`)}
+    catch(e){
+      if(e.status!==404||!path||request!==COLLECTION_BROWSER_REQUEST)throw e;
+      data=await api(`/api/collections/${id}/browse?path=`);
+    }
+    if(request!==COLLECTION_BROWSER_REQUEST||COLLECTION_BROWSER.id!==id)return;
+    COLLECTION_BROWSER.path=data.current_path;
+    const error=document.getElementById('collectionBrowserError');error.textContent=data.collection.sync_error||'';error.classList.toggle('hidden',!data.collection.sync_error);
+    const signature=JSON.stringify(data);
+    if(background&&COLLECTION_BROWSER.signature===signature)return;
+    COLLECTION_BROWSER.signature=signature;
+    document.getElementById('collectionBrowserTitle').textContent=data.collection.name;
+    document.getElementById('collectionBrowserLocation').textContent='Carpeta en la computadora principal: '+data.collection.physical_path;
+    let breadcrumb=`<button onclick="browseCollection('')">${esc(data.collection.name)}</button>`,parts=[];
+    for(const part of data.current_path.split('/').filter(Boolean)){
+      parts.push(part);breadcrumb+=`<span>›</span><button onclick="browseCollection(decodeURIComponent('${encodeURIComponent(parts.join('/'))}'))">${esc(part)}</button>`;
+    }
+    document.getElementById('collectionBrowserBreadcrumb').innerHTML=breadcrumb;
+    document.getElementById('collectionBrowserSummary').textContent=`${data.folders.length} carpetas · ${data.items.length} archivos`;
+    const folders=data.folders.map(f=>`<div class="asset-card folder-asset"><div class="folder-icon">📁</div><div class="asset-name">${esc(f.name)}</div><button class="secondary" onclick="browseCollection(decodeURIComponent('${encodeURIComponent(f.path)}'))">Abrir carpeta</button></div>`).join('');
+    document.getElementById('collectionBrowserItems').innerHTML=(folders+collectionCards(id,data.items))||'<div class="empty">Esta carpeta está vacía.</div>';
+  }catch(e){if(request===COLLECTION_BROWSER_REQUEST){const error=document.getElementById('collectionBrowserError');error.textContent=e.message;error.classList.remove('hidden')}}
+  finally{if(!background)COLLECTION_BROWSER_NAVIGATING--}
+}
+async function syncCollection(id){if(id)return runSync(`/api/collections/${id}/rescan`)}
 async function zipCollection(id){try{const d=await api(`/api/collections/${id}/zip`,{method:'POST'});if(!isLocalHost()&&d.download_path){downloadFromLibrary(d.download_path);toast('Descargando ZIP...')}else toast('ZIP creado en Exportaciones: '+d.path)}catch(e){toast(e.message)}}
 async function removeCollectionItem(cid,itemId){
   try{
     if(!await confirmDelete('Esta copia se moverá a la Papelera. La imagen original de Biblioteca seguirá disponible.'))return;
     await api(`/api/collections/${cid}/items/${itemId}`,{method:'DELETE'});
-    toast('Copia enviada a la Papelera');await collectionDetail(cid);await loadCollections();
+    toast('Copia enviada a la Papelera');if(document.querySelector('.page.active')?.id==='page-collection-browser')await browseCollection(COLLECTION_BROWSER.path);else await collectionDetail(cid);await loadCollections();
   }catch(e){toast(e.message)}
 }
 
@@ -736,9 +814,17 @@ function showSyncStatus(message){
   const status=document.getElementById('syncStatus');
   status.textContent=message;
   status.classList.remove('hidden');
+  if(COLLECTION_DETAIL_ID){
+    const inline=document.getElementById('collectionModalStatus');
+    if(inline){inline.textContent=message;inline.classList.remove('hidden')}
+  }
 }
 async function refreshActiveView(background=false){
+  if(COLLECTION_DETAIL_ID&&!document.getElementById('modal').classList.contains('hidden')){
+    await collectionDetail(COLLECTION_DETAIL_ID,true);return;
+  }
   const active=document.querySelector('.page.active')?.id;
+  if(active==='page-collection-browser')await browseCollection(COLLECTION_BROWSER.path,background);
   if(active==='page-dashboard')await loadDashboard();
   if(active==='page-library'){
     if(!document.getElementById('libraryExplorerView')?.classList.contains('hidden')&&EXPLORER.rid)await refreshExplorer();
@@ -751,7 +837,7 @@ async function refreshActiveView(background=false){
 async function runSync(endpoint){
   if(SYNC_BUSY)return;
   SYNC_BUSY=true;
-  const buttons=[...document.querySelectorAll('[onclick="syncAllResources()"],[onclick="explorerRescan()"]')];
+  const buttons=[...document.querySelectorAll('[onclick="syncAllResources()"],[onclick="explorerRescan()"],[onclick^="syncCollection("]')];
   const previous=buttons.map(b=>({html:b.innerHTML,disabled:b.disabled}));
   buttons.forEach(b=>{b.disabled=true;b.textContent='↻ Sincronizando…'});
   showSyncStatus('Sincronizando archivos del servidor… Puede tardar si la biblioteca es grande.');
@@ -762,14 +848,15 @@ async function runSync(endpoint){
     if(errors.length){
       showSyncStatus(`Sincronización incompleta: ${d.resources} recursos actualizados. `+errors.map(e=>`${e.name}: ${e.detail}`).join(' · '));
     }else{
-      const summary=d.resources===undefined?`${d.file_count} archivos`:`${d.resources} recursos · ${d.files} archivos`;
+      const summary=d.resources===undefined?`${d.file_count} archivos`:`${d.resources} recursos · ${d.files} archivos de Biblioteca${d.collections!==undefined?` · ${d.collections} colecciones · ${d.collection_files} archivos de colecciones`:''}`;
       showSyncStatus(`Sincronizado: ${summary}${d.tags_preserved===false?' · Revisa las etiquetas.':' · Etiquetas conservadas.'}`);
     }
   }catch(e){showSyncStatus(`No se pudo completar la sincronización: ${e.message}`)}
   finally{SYNC_BUSY=false;buttons.forEach((b,i)=>{b.disabled=previous[i].disabled;b.innerHTML=previous[i].html})}
 }
 async function refreshSharedView(){
-  if(REFRESH_BUSY||SYNC_BUSY||DELETE_CONFIRM_PENDING||document.hidden||!document.getElementById('modal')?.classList.contains('hidden'))return;
+  if(REFRESH_BUSY||SYNC_BUSY||DELETE_CONFIRM_PENDING||document.hidden)return;
+  if(!document.getElementById('modal')?.classList.contains('hidden')&&!COLLECTION_DETAIL_ID)return;
   REFRESH_BUSY=true;
   try{await refreshActiveView(true)}catch(e){console.warn('No se pudo actualizar la vista compartida:',e)}
   finally{REFRESH_BUSY=false}

@@ -1,17 +1,14 @@
-SORPREZZ ASSET MANAGER V1.4.1
+SORPREZZ ASSET MANAGER V1.9.2
 
-Archivos que debes reemplazar en GitHub:
-- app.py
-- README.txt
-- web/app.js
-- web/index.html
-- web/styles.css
-- installer/SorprezzAssetManager.iss
+1. Integra los cambios de la rama corregir-sincronizacion-red en main.
+2. En GitHub Actions, espera a que "Crear instalador de Windows" termine en verde.
+3. Abre esa ejecución y descarga el artefacto:
+   Sorprezz-Asset-Manager-Windows-Installer
+4. Extrae el ZIP. El instalador actualizado es:
+   Sorprezz-Asset-Manager-Setup-v1.9.2.exe
+5. Cierra Sorprezz en la computadora principal e instala encima de la versión anterior.
+6. Vuelve a abrir Sorprezz. En los otros navegadores, recarga con Ctrl + F5.
 
-NO reemplazar:
-- .github/workflows/build-windows.yml
-
-Después de subir los archivos a la rama main, GitHub Actions generará:
-Sorprezz-Asset-Manager-Setup-v1.4.1.exe
-
-Instala el nuevo EXE encima de la versión anterior. No desinstales ni borres SorprezzLibrary.
+Conserva la Biblioteca y los datos de SorprezzAssetManager, incluida la Papelera.
+No necesitas mover el programa ni las imágenes a OneDrive.
+Los detalles de cada colección muestran la carpeta física que está usando el servidor.

@@ -11,6 +11,8 @@
 @media(max-width:850px){.explorer-layout{grid-template-columns:1fr}.explorer-tree-panel{max-height:240px}.explorer-top{grid-template-columns:1fr}.catalog-toolbar{grid-template-columns:1fr}.quick-tools,.catalog-intro{align-items:flex-start;flex-direction:column}.asset-list .asset-card{grid-template-columns:70px 1fr}.asset-list .asset-card>*:nth-child(n+3){display:none}.catalog-form{grid-template-columns:1fr}.catalog-form .wide{grid-column:auto}.feature-grid{grid-template-columns:1fr}}
 
 /* El cierre tiene una fila propia; las acciones destructivas van al pie. */
+.collection-location{font-size:12px;overflow-wrap:anywhere;max-width:650px}
+.collection-browser-grid{margin-top:18px}
 .modal-close-bar{display:flex;justify-content:flex-end;position:sticky;top:-24px;background:#fff;z-index:5;padding:0 0 12px;margin:-8px -8px 0 0}
 .modal-close-bar .modal-x{position:static;width:40px;height:40px;display:grid;place-items:center;border:1px solid var(--line);border-radius:10px;background:#f7f6fa;color:var(--text);line-height:1}
 .modal-danger-zone{border-top:1px solid var(--line);margin-top:24px;padding-top:18px;display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}

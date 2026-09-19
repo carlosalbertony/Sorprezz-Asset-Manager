@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -30,7 +31,7 @@ import uvicorn
 from trash_store import TrashStore
 
 APP_NAME = "Sorprezz Asset Manager"
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.9.2"
 # PyInstaller extracts bundled resources to sys._MEIPASS. In source mode we use this file's folder.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 WEB_DIR = BASE_DIR / "web"
@@ -387,6 +388,12 @@ def init_db() -> None:
         }.items():
             if col not in file_columns:
                 con.execute(f"ALTER TABLE files ADD COLUMN {col} {ddl}")
+
+        # Huellas de las copias para reconocer cambios y renombres hechos en Windows.
+        item_columns = {x['name'] for x in con.execute('PRAGMA table_info(collection_items)')}
+        for col, ddl in {'size_bytes': 'INTEGER', 'mtime_ns': 'INTEGER', 'fingerprint': 'TEXT'}.items():
+            if col not in item_columns:
+                con.execute(f'ALTER TABLE collection_items ADD COLUMN {col} {ddl}')
 
         # V1.8.1: Colecciones usa las mismas categorías globales que Biblioteca.
         collection_columns = {x["name"] for x in con.execute("PRAGMA table_info(collections)")}
@@ -2006,11 +2013,15 @@ def resources_rescan_all():
                     )
         except Exception as e:
             errors.append({"resource_id": row["id"], "name": row["name"], "detail": str(e)})
+    collection_scans, collection_errors = scan_all_collections()
+    errors.extend(collection_errors)
     with db() as con:
         tag_links_after = int(con.execute("SELECT COUNT(*) AS c FROM file_tags").fetchone()["c"] or 0)
     return {
         "ok": not errors, "resources": scanned, "files": files, "total_bytes": total_bytes,
         "errors": errors,
+        "collections": len(collection_scans),
+        "collection_files": sum(r['file_count'] for r in collection_scans.values()),
         "missing": missing, "backup": backup_path,
         "tag_links_before": tag_links_before, "tag_links_after": tag_links_after,
         "tags_preserved": tag_links_after >= tag_links_before,
@@ -2143,7 +2154,18 @@ def library_relative_path(absolute: str | Path) -> str:
 
 
 def is_local_request(request: Request) -> bool:
-    return bool(request.client) and request.client.host in ("127.0.0.1", "::1")
+    if not request.client:
+        return False
+    host = request.client.host.removeprefix('::ffff:')
+    if host in ('127.0.0.1', '::1'):
+        return True
+    # El dueño también puede abrir su propia IP de red, en vez de localhost.
+    # La decisión usa la conexión, nunca un encabezado enviado por el navegador.
+    try:
+        local_addresses = {info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None)}
+        return host in local_addresses
+    except OSError:
+        return False
 
 
 @app.get("/api/library/download")
@@ -2803,6 +2825,7 @@ def create_collection_record(name: str, category_id: int, subcategory_id: Option
 
 @library_write
 def add_assets_to_collection(collection_id: int, items: list[dict], respect_removed: bool = False) -> dict:
+    scan_collection(collection_id)
     with db() as con:
         col = con.execute("SELECT * FROM collections WHERE id=?", (collection_id,)).fetchone()
         trashed = [json.loads(r['metadata']) for r in con.execute("SELECT metadata FROM trash WHERE kind='collection_item'")]
@@ -2845,8 +2868,8 @@ def add_assets_to_collection(collection_id: int, items: list[dict], respect_remo
         shutil.copy2(src, dst)
         with db() as con:
             cur = con.execute(
-                "INSERT INTO collection_items(collection_id,resource_id,source_rel_path,copied_path,title,created_at) VALUES (?,?,?,?,?,?)",
-                (collection_id, rid, rel, str(dst), src.stem, now_iso()),
+                "INSERT INTO collection_items(collection_id,resource_id,source_rel_path,copied_path,title,created_at,size_bytes,mtime_ns,fingerprint) VALUES (?,?,?,?,?,?,?,?,?)",
+                (collection_id, rid, rel, str(dst), src.stem, now_iso(), dst.stat().st_size, dst.stat().st_mtime_ns, fast_file_fingerprint(dst)),
             )
             item_id = cur.lastrowid
             if not respect_removed:
@@ -2858,8 +2881,123 @@ def add_assets_to_collection(collection_id: int, items: list[dict], respect_remo
     return {"ok": True, "added": len(added), "skipped": skipped, "items": added}
 
 
+def collection_root(cid: int):
+    rows = trash_rows('collections', 'id=?', (cid,))
+    if not rows:
+        raise HTTPException(404, 'Colección no encontrada')
+    collection = rows[0]
+    root = Path(collection['physical_path']).resolve()
+    if not root.is_dir():
+        raise HTTPException(404, f'La carpeta de la colección no está disponible: {root}')
+    return collection, root
+
+
+def safe_collection_path(cid: int, path: str = ''):
+    collection, root = collection_root(cid)
+    target = (root / path.replace('\\', '/')).resolve()
+    if not _is_within(target, root):
+        raise HTTPException(400, 'Ruta fuera de la colección')
+    return collection, root, target
+
+
+@library_write
+def scan_collection(cid: int):
+    """Reconcilia el contenido real, sin recrear copias retiradas ni cambiar sus IDs."""
+    _, root = collection_root(cid)
+    old_rows = trash_rows('collection_items', 'collection_id=?', (cid,))
+    key = lambda p: os.path.normcase(os.path.abspath(p))
+    old_by_path = {key(r['copied_path']): r for r in old_rows}
+    found = []
+    def walk_error(error):
+        raise error
+    try:
+        for directory, dirs, names in os.walk(root, onerror=walk_error, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(directory) / name).is_symlink()
+                       and not (hasattr(Path(directory) / name, 'is_junction') and (Path(directory) / name).is_junction())]
+            for name in names:
+                path = Path(directory) / name
+                if path.is_symlink() or not path.is_file():
+                    continue
+                stat = path.stat()
+                old = old_by_path.get(key(path), {})
+                same = old.get('size_bytes') == stat.st_size and old.get('mtime_ns') == stat.st_mtime_ns
+                fingerprint = old.get('fingerprint') if same else None
+                found.append((path, stat, fingerprint or fast_file_fingerprint(path)))
+    except OSError as exc:
+        # No publicar un índice vacío o parcial si una carpeta no se pudo leer.
+        raise HTTPException(500, f'No se pudo leer la colección: {exc}') from exc
+    existing_paths = {key(path) for path, _, _ in found}
+    missing_by_fp = {}
+    for row in old_rows:
+        if key(row['copied_path']) not in existing_paths and row.get('fingerprint'):
+            missing_by_fp.setdefault(row['fingerprint'], []).append(row)
+    kept = set()
+    changed = False
+    with db() as con:
+        for path, stat, fingerprint in found:
+            row = old_by_path.get(key(path))
+            if row is None and fingerprint:
+                candidates = missing_by_fp.get(fingerprint, [])
+                if len(candidates) == 1 and candidates[0]['id'] not in kept:
+                    row = candidates[0]
+            if row:
+                kept.add(row['id'])
+                values = (str(path), stat.st_size, stat.st_mtime_ns, fingerprint)
+                if values != (row['copied_path'], row.get('size_bytes'), row.get('mtime_ns'), row.get('fingerprint')):
+                    con.execute('UPDATE collection_items SET copied_path=?,size_bytes=?,mtime_ns=?,fingerprint=? WHERE id=?', (*values, row['id']))
+                    changed = True
+            else:
+                con.execute('''INSERT INTO collection_items(collection_id,copied_path,title,created_at,size_bytes,mtime_ns,fingerprint)
+                               VALUES (?,?,?,?,?,?,?)''', (cid, str(path), path.stem, now_iso(), stat.st_size, stat.st_mtime_ns, fingerprint))
+                changed = True
+        for row in old_rows:
+            if row['id'] in kept:
+                continue
+            if row['resource_id'] is not None and row['source_rel_path'] is not None:
+                con.execute('INSERT OR IGNORE INTO collection_exclusions VALUES (?,?,?)', (cid, row['resource_id'], row['source_rel_path']))
+            con.execute('DELETE FROM collection_items WHERE id=?', (row['id'],))
+            changed = True
+        if changed:
+            con.execute('UPDATE collections SET updated_at=? WHERE id=?', (now_iso(), cid))
+    return {'ok': True, 'file_count': len(found), 'total_bytes': sum(stat.st_size for _, stat, _ in found)}
+
+
+def scan_all_collections():
+    results, errors = {}, []
+    for row in trash_rows('collections', '1=1', ()):
+        try:
+            results[row['id']] = scan_collection(row['id'])
+        except HTTPException as exc:
+            errors.append({'collection_id': row['id'], 'name': row['name'], 'detail': exc.detail})
+    return results, errors
+
+
+@app.post('/api/collections/{cid}/rescan')
+def collection_rescan(cid: int):
+    return scan_collection(cid)
+
+
+@app.get('/api/collections/{cid}/browse')
+def collection_browse(cid: int, request: Request, path: str = ''):
+    collection = collection_detail(cid, request)
+    _, root, current = safe_collection_path(cid, path)
+    if not current.is_dir():
+        raise HTTPException(404, 'La carpeta ya no existe')
+    try:
+        folders = [{'name': p.name, 'path': canonical_rel_path(str(p.relative_to(root)))}
+                   for p in sorted(current.iterdir(), key=lambda p: p.name.lower())
+                   if p.is_dir() and not p.is_symlink() and _is_within(p, root)]
+    except OSError as exc:
+        raise HTTPException(500, f'No se pudo leer la carpeta: {exc}') from exc
+    items = [item for item in collection.pop('items') if Path(item['copied_path']).parent == current and item['exists']]
+    return {'collection': collection, 'current_path': canonical_rel_path(str(current.relative_to(root))) if current != root else '',
+            'folders': folders, 'items': items}
+
+
 @app.get("/api/collections")
-def collections_list(q: str = ""):
+def collections_list(request: Request, q: str = ""):
+    scans, errors = scan_all_collections()
+    open_mode = 'windows' if is_local_request(request) else 'browser'
     with db() as con:
         rows = [dict(x) for x in con.execute(
             """SELECT c.*,
@@ -2876,16 +3014,11 @@ def collections_list(q: str = ""):
             f"{r['name']} {r.get('category_name') or r.get('category') or ''} {r.get('subcategory_name') or ''} {r.get('description') or ''}"
         )]
     for r in rows:
+        r['open_mode'] = open_mode
         r["category"] = r.get("category_name") or r.get("category") or "General"
         r["subcategory"] = r.get("subcategory_name") or ""
-        total = 0
-        p = Path(r["physical_path"])
-        if p.exists():
-            for f in p.iterdir():
-                if f.is_file():
-                    try: total += f.stat().st_size
-                    except OSError: pass
-        r["total_bytes"] = total
+        r['total_bytes'] = scans.get(r['id'], {}).get('total_bytes', 0)
+        r['sync_error'] = next((e['detail'] for e in errors if e['collection_id'] == r['id']), None)
     return rows
 
 
@@ -2895,7 +3028,12 @@ def collection_create(payload: CollectionIn):
 
 
 @app.get("/api/collections/{cid}")
-def collection_detail(cid: int):
+def collection_detail(cid: int, request: Request):
+    sync_error = None
+    try:
+        scan_collection(cid)
+    except HTTPException as exc:
+        sync_error = exc.detail
     with db() as con:
         c = con.execute(
             """SELECT c.*,cat.name AS category_name,sub.name AS subcategory_name
@@ -2915,6 +3053,8 @@ def collection_detail(cid: int):
                WHERE ci.collection_id=? ORDER BY ci.id DESC""", (cid,)
         )]
     result = dict(c)
+    result['sync_error'] = sync_error
+    result['open_mode'] = 'windows' if is_local_request(request) else 'browser'
     result["category"] = result.get("category_name") or result.get("category") or "General"
     result["subcategory"] = result.get("subcategory_name") or ""
     for item in items:
@@ -2922,6 +3062,8 @@ def collection_detail(cid: int):
         item["exists"] = p.exists()
         item["name"] = p.name if p.name else (item.get("title") or "Archivo")
         item["ext"] = p.suffix.lower().lstrip(".")
+        item['rel_path'] = canonical_rel_path(str(p.relative_to(Path(c['physical_path'])))) if _is_within(p, Path(c['physical_path'])) else p.name
+        item['revision'] = str(item.get('mtime_ns') or '')
         item["previewable"] = item["ext"] in PREVIEW_EXTS
         try: item["size_bytes"] = p.stat().st_size if p.exists() else 0
         except OSError: item["size_bytes"] = 0
@@ -2966,23 +3108,38 @@ def collection_item_preview(cid: int, item_id: int):
     if not row:
         raise HTTPException(404, "Elemento no encontrado")
     p = Path(row["copied_path"])
+    _, root = collection_root(cid)
+    if not _is_within(p, root):
+        raise HTTPException(400, 'Archivo fuera de la colección')
     if not p.exists() or p.suffix.lower().lstrip(".") not in PREVIEW_EXTS:
         raise HTTPException(404, "Vista previa no disponible")
     return FileResponse(p)
 
 
+@app.get('/api/collections/{cid}/items/{item_id}/download')
+def collection_item_download(cid: int, item_id: int):
+    rows = trash_rows('collection_items', 'id=? AND collection_id=?', (item_id, cid))
+    if not rows:
+        raise HTTPException(404, 'Archivo no encontrado')
+    _, root = collection_root(cid)
+    path = Path(rows[0]['copied_path'])
+    if not _is_within(path, root):
+        raise HTTPException(400, 'Archivo fuera de la colección')
+    if not path.is_file():
+        raise HTTPException(404, 'Archivo no encontrado')
+    return FileResponse(path, filename=path.name)
+
+
 @app.post("/api/collections/{cid}/open")
-def collection_open(cid: int):
-    with db() as con:
-        row = con.execute("SELECT physical_path FROM collections WHERE id=?", (cid,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Colección no encontrada")
-    p = Path(row["physical_path"])
-    if not p.exists():
-        raise HTTPException(404, "La carpeta física de la colección no existe")
+def collection_open(cid: int, request: Request, path: str = ''):
+    _, _, p = safe_collection_path(cid, path)
+    if not p.is_dir():
+        raise HTTPException(404, 'La carpeta física de la colección no existe')
+    if not is_local_request(request):
+        return {'ok': True, 'mode': 'browser', 'collection_id': cid}
     try:
         open_os_path(p)
-        return {"ok": True}
+        return {"ok": True, "mode": "windows"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
