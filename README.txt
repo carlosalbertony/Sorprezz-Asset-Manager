@@ -1,5 +1,26 @@
 SORPREZZ ASSET MANAGER V1.9.1
 
+CORRECCIÓN DE SINCRONIZACIÓN EN RED
+---------------------------------
+- La aplicación instalada y los navegadores deben conectarse al mismo servidor.
+- Las carpetas abiertas y la vista de imágenes consultan los cambios cada 3 segundos
+  mientras la pestaña está visible y no hay un diálogo abierto.
+- Las importaciones realizadas dentro de Sorprezz quedan indexadas al terminar.
+- Las imágenes copiadas desde Windows dentro de un recurso existente se ven al
+  actualizar su carpeta. Usa Sincronizar recurso o Sincronizar todo para actualizar
+  también el índice de imágenes, los conteos y las etiquetas asociadas.
+- Sincronizar conserva la subcarpeta abierta y la selección; muestra progreso y
+  cualquier carpeta que no pudo procesarse. No descarga cambios nuevos de Drive.
+- Se reutilizan huellas de archivos sin cambios y se serializan las indexaciones
+  concurrentes. Las conexiones de base de datos se cierran al terminar cada consulta.
+- Para aplicar una actualización del programa instalado, compila/instala la nueva
+  versión en la computadora que sirve la biblioteca y recarga los navegadores.
+
+Pruebas de regresión (datos temporales, sin tocar la biblioteca personal):
+  python -m pip install -r requirements.txt httpx
+  python -m unittest discover -s tests -v
+  node --test tests/sync_ui.test.js
+
 HOTFIX V1.9.1 - ARRANQUE ESTABLE
 - La reindexación automática ya no bloquea el inicio de la interfaz.
 - El tiempo de espera del servicio local aumenta de 12 a 60 segundos.

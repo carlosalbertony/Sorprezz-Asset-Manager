@@ -61,14 +61,25 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 executor = ThreadPoolExecutor(max_workers=2)
 active_downloads: dict[int, dict] = {}
 active_lock = threading.Lock()
+index_lock = threading.Lock()
 
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+class DatabaseConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        # sqlite3 confirma/revierte la transacción, pero no cierra la conexión.
+        # Las consultas periódicas de varios clientes no deben acumular conexiones abiertas.
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH, timeout=30)
+    con = sqlite3.connect(DB_PATH, timeout=30, factory=DatabaseConnection)
     con.row_factory = sqlite3.Row
     return con
 
@@ -529,6 +540,13 @@ def get_resource(rid: int):
 
 
 def index_resource(rid: int, path: Path) -> tuple[int, int]:
+    # Dos navegadores (o la reparación inicial) pueden sincronizar a la vez.
+    # Serializar la lectura y escritura evita publicar un índice anterior al último importado.
+    with index_lock:
+        return _index_resource(rid, path)
+
+
+def _index_resource(rid: int, path: Path) -> tuple[int, int]:
     """Reindexa sin destruir etiquetas.
 
     Las versiones anteriores reconstruían `files` usando \\ en Windows mientras las etiquetas
@@ -549,6 +567,7 @@ def index_resource(rid: int, path: Path) -> tuple[int, int]:
         tags_by_path.setdefault(canonical_rel_path(tr['rel_path']), set()).add(int(tr['tag_id']))
 
     old_fp_by_path = {canonical_rel_path(x['rel_path']): (x.get('fingerprint') or '') for x in old_files}
+    old_by_path = {canonical_rel_path(x['rel_path']): x for x in old_files}
     tags_by_fp: dict[str, set[int]] = {}
     for rel, tids in tags_by_path.items():
         fp = old_fp_by_path.get(rel)
@@ -568,7 +587,11 @@ def index_resource(rid: int, path: Path) -> tuple[int, int]:
             size = 0; mtime_ns = 0
         rel = canonical_rel_path(str(p.relative_to(path)))
         ext = p.suffix.lower().lstrip('.') or 'sin_extension'
-        fp = fast_file_fingerprint(p)
+        old = old_by_path.get(rel, {})
+        unchanged = mtime_ns and old.get('mtime_ns') == mtime_ns and old.get('size_bytes') == size
+        fp = old.get('fingerprint') if unchanged else None
+        if not fp:
+            fp = fast_file_fingerprint(p)
         file_rows.append((rid, rel, ext, size, now_iso(), fp, mtime_ns))
         total += size; count += 1
         tids = tags_by_path.get(rel) or (tags_by_fp.get(fp) if fp else None) or set()
@@ -1806,7 +1829,10 @@ def resource_rescan(rid: int):
     path = Path(r["local_path"])
     if not path.exists():
         raise HTTPException(404, "La carpeta local ya no existe")
-    count, total = index_resource(rid, path)
+    try:
+        count, total = index_resource(rid, path)
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo sincronizar el recurso: {e}") from e
     try:
         sync_resource_to_selected_collection(rid)
     except Exception:
@@ -1828,16 +1854,18 @@ def resources_rescan_all():
     with db() as con:
         tag_links_before = int(con.execute("SELECT COUNT(*) AS c FROM file_tags").fetchone()["c"] or 0)
         rows = [dict(x) for x in con.execute(
-            "SELECT id, local_path FROM resources WHERE local_path IS NOT NULL AND local_path <> '' ORDER BY id"
+            "SELECT id, name, local_path FROM resources WHERE local_path IS NOT NULL AND local_path <> '' ORDER BY id"
         )]
     scanned = 0
     files = 0
     total_bytes = 0
     missing = 0
+    errors = []
     for row in rows:
         path = Path(row["local_path"])
         if not path.exists() or not path.is_dir():
             missing += 1
+            errors.append({"resource_id": row["id"], "name": row["name"], "detail": "La carpeta local no está disponible"})
             continue
         try:
             count, total = index_resource(row["id"], path)
@@ -1854,12 +1882,13 @@ def resources_rescan_all():
                         "UPDATE resources SET status='completado', file_count=?, total_bytes=?, updated_at=? WHERE id=?",
                         (count, total, now_iso(), row["id"]),
                     )
-        except Exception:
-            continue
+        except Exception as e:
+            errors.append({"resource_id": row["id"], "name": row["name"], "detail": str(e)})
     with db() as con:
         tag_links_after = int(con.execute("SELECT COUNT(*) AS c FROM file_tags").fetchone()["c"] or 0)
     return {
-        "ok": True, "resources": scanned, "files": files, "total_bytes": total_bytes,
+        "ok": not errors, "resources": scanned, "files": files, "total_bytes": total_bytes,
+        "errors": errors,
         "missing": missing, "backup": backup_path,
         "tag_links_before": tag_links_before, "tag_links_after": tag_links_after,
         "tags_preserved": tag_links_after >= tag_links_before,
@@ -1939,12 +1968,16 @@ def resource_browse(rid: int, path: str = ""):
             items.append({"kind": "folder", "name": p.name, "path": rel, "child_count": child_count, "tags": folder_tags_map.get(rel, [])})
         elif p.is_file():
             try:
-                size = p.stat().st_size
+                stat = p.stat()
+                size = stat.st_size
+                revision = str(stat.st_mtime_ns)
             except OSError:
                 size = 0
+                revision = ""
             ext = p.suffix.lower().lstrip(".") or "sin_extension"
             items.append({
                 "kind": "file", "name": p.name, "path": rel, "ext": ext, "size_bytes": size,
+                "revision": revision,
                 "previewable": ext in PREVIEW_EXTS, "cataloged": rel in cataloged, "tags": file_tags_map.get(rel, []),
             })
     current_rel = str(current.relative_to(root)).replace("\\", "/") if current != root else ""
@@ -2527,7 +2560,7 @@ def global_assets(q: str = "", tag_id: Optional[int] = None, category_id: Option
                   resource_id: Optional[int] = None, images_only: bool = True, limit: int = 500):
     limit = max(1, min(int(limit or 500), 1500))
     sql = """
-        SELECT f.resource_id,f.rel_path,f.ext,f.size_bytes,r.name AS resource_name,
+        SELECT f.resource_id,f.rel_path,f.ext,f.size_bytes,CAST(f.mtime_ns AS TEXT) AS revision,r.name AS resource_name,
                c.id AS category_id,c.name AS category_name,s.name AS subcategory_name
         FROM files f
         JOIN resources r ON r.id=f.resource_id
