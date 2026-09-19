@@ -1,5 +1,23 @@
 SORPREZZ ASSET MANAGER V1.9.2
 
+REVISIÓN DE LOS FLUJOS COMPARTIDOS
+---------------------------------
+- Corregido Abrir carpeta desde los detalles de Biblioteca: cierra el diálogo y
+  abre el explorador del programa para usuarios remotos. Las peticiones remotas
+  de apertura de archivos o carpetas no abren ventanas en el servidor.
+- Los nombres con apóstrofes, espacios y tildes funcionan en los controles.
+- La búsqueda incluye toda la biblioteca antes de limitar los resultados.
+- Una carpeta sin acceso no reemplaza el índice por una lista parcial.
+- Los errores al copiar a una colección se muestran al sincronizar.
+- Una importación interrumpida no deja una imagen parcial en la biblioteca.
+- Los ZIP conservan subcarpetas y archivos de igual nombre. Dos usuarios pueden
+  exportar a la vez sin sobrescribir el ZIP de la otra persona.
+- La actualización periódica sigue disponible si falla la primera petición.
+- La compilación local y GitHub usan build_windows.py. Antes de crear el instalador,
+  verify_build.py prueba el ejecutable real con datos temporales: inicio del servidor,
+  interfaz web, dependencias de Drive, indexación, colecciones y restauración.
+- GitHub ejecuta también las pruebas antes de compilar, incluyendo los pull requests.
+
 V1.9.2 - COLECCIONES COMPARTIDAS Y CAMBIOS DESDE WINDOWS
 -----------------------------------------------------
 - OneDrive no es necesario para compartir la aplicación. El servidor sigue siendo

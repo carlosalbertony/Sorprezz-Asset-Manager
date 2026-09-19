@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -167,4 +169,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == '--check-installation':
+        try:
+            from installation_check import run
+            result = run()
+        except Exception:
+            result = {'ok': False, 'error': traceback.format_exc()}
+        Path(sys.argv[2]).write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+        sys.exit(0 if result['ok'] else 1)
+    else:
+        main()

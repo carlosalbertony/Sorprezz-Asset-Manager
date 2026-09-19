@@ -44,6 +44,44 @@ function setup(){
 }
 function photo(path,revision='1'){return {kind:'file',path,name:path.split('/').pop(),ext:'png',previewable:true,revision,size_bytes:5,tags:[]}}
 
+test('apostrophes and accented paths generate executable folder and image controls',()=>{
+  const ui=setup();
+  const path="Diseños de papá/John's foto.png";
+  ui.run(`EXPLORER.items=[${JSON.stringify(photo(path))}];renderExplorerItems()`);
+  const html=ui.element('explorerItems').innerHTML;
+  const handlers=[...html.matchAll(/(?:onclick|ondblclick|onchange)="([^"]+)"/g)].map(m=>m[1]);
+  assert.ok(handlers.length>4);
+  for(const handler of handlers)assert.doesNotThrow(()=>new Function('event',handler));
+  const select=handlers.find(h=>h.startsWith('toggleExplorerSelection'));
+  ui.run(select.replace('this.checked','true'));
+  assert.equal(ui.run(`EXPLORER.selected.has(${JSON.stringify(path)})`),true);
+});
+
+test('opening a library folder from details closes the overlay and loads immediately',async()=>{
+  const ui=setup();ui.element('modal').classList.remove('hidden');
+  ui.run('go=()=>{}');
+  ui.setHandler(async path=>{
+    if(path.endsWith('/open'))return {mode:'browser'};
+    if(path==='/api/resources')return [{id:2,name:'Recurso',local_path:'server'}];
+    if(path==='/api/tags')return [];
+    if(path.endsWith('/tree'))return {resource:{id:2},tree:[]};
+    if(path.includes('/browse'))return {current_path:'',items:[]};
+    throw new Error(path);
+  });
+  await ui.run('openFolder(2)');
+  assert.equal(ui.element('modal').classList.contains('hidden'),true);
+  assert.equal(ui.run('EXPLORER.rid'),2);
+  assert.ok(ui.calls.some(c=>c.path.startsWith('/api/resources/2/browse')));
+});
+
+test('polling is installed even when the first startup request fails',async()=>{
+  const ui=setup();
+  ui.run('setInterval=()=>{window.pollingInstalled=true};loadCategories=async()=>{throw new Error("Sin conexión")}');
+  const init=fs.readFileSync(require('node:path').join(__dirname,'../web/app.js'),'utf8').split('(async function init(){')[1];
+  await ui.run('(async function init(){'+init);
+  assert.equal(ui.run('window.pollingInstalled'),true);
+});
+
 test('automatic refresh shows new uploads in open subfolder, preserving selection',async()=>{
   const ui=setup();
   await ui.run('refreshSharedView()');

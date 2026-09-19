@@ -2,6 +2,8 @@ name: Crear instalador de Windows
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [ "main" ]
   push:
     branches: [ "main" ]
 
@@ -26,16 +28,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-build.txt
+          pip install httpx
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Comprobar flujos compartidos
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/sync_ui.test.js
 
       - name: Compilar aplicación con PyInstaller
         shell: pwsh
-        run: |
-          pyinstaller --noconfirm --clean --windowed `
-            --name SorprezzAssetManager `
-            --icon assets/sorprezz.ico `
-            --add-data "web;web" `
-            --collect-all webview `
-            desktop.py
+        run: python build_windows.py
+
+      - name: Comprobar aplicación compilada con datos temporales
+        run: python verify_build.py
 
       - name: Instalar Inno Setup
         shell: pwsh

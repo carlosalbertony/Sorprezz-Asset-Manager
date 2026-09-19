@@ -601,6 +601,21 @@ def index_resource(rid: int, path: Path) -> tuple[int, int]:
         return _index_resource(rid, path)
 
 
+def walk_library_files(root: Path):
+    """Fail the scan on unreadable folders instead of publishing a partial index."""
+    def walk_error(error):
+        raise error
+    if not root.is_dir():
+        raise FileNotFoundError(f'La carpeta no está disponible: {root}')
+    for directory, dirs, names in os.walk(root, onerror=walk_error, followlinks=False):
+        dirs[:] = [name for name in dirs if not (Path(directory) / name).is_symlink()
+                   and not (hasattr(Path(directory) / name, 'is_junction') and (Path(directory) / name).is_junction())]
+        for name in names:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                yield path
+
+
 def _index_resource(rid: int, path: Path) -> tuple[int, int]:
     """Reindexa sin destruir etiquetas.
 
@@ -633,13 +648,8 @@ def _index_resource(rid: int, path: Path) -> tuple[int, int]:
     remapped_tags: set[tuple[str,int]] = set()
     total = 0
     count = 0
-    for p in path.rglob('*'):
-        if not p.is_file():
-            continue
-        try:
-            st = p.stat(); size = st.st_size; mtime_ns = int(getattr(st, 'st_mtime_ns', 0) or 0)
-        except OSError:
-            size = 0; mtime_ns = 0
+    for p in walk_library_files(path):
+        st = p.stat(); size = st.st_size; mtime_ns = int(getattr(st, 'st_mtime_ns', 0) or 0)
         rel = canonical_rel_path(str(p.relative_to(path)))
         ext = p.suffix.lower().lstrip('.') or 'sin_extension'
         old = old_by_path.get(rel, {})
@@ -722,9 +732,12 @@ def sync_resource_to_selected_collection(rid: int) -> dict:
         return {"added": 0, "skipped": 0}
     try:
         return add_assets_to_collection(int(row["collection_id"]), refs, respect_removed=True)
-    except Exception:
+    except Exception as exc:
         # La descarga nunca se marca como fallida solo porque la colección no pudo sincronizarse.
-        return {"added": 0, "skipped": len(refs)}
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        return {"ok": False, "added": 0, "skipped": len(refs), "errors": [
+            {"resource_id": rid, "collection_id": int(row['collection_id']),
+             "name": "Copia a la colección", "detail": detail}]}
 
 def google_client_configured() -> bool:
     if not GOOGLE_OAUTH_CLIENT_PATH.exists():
@@ -1961,10 +1974,7 @@ def resource_rescan(rid: int):
         count, total = index_resource(rid, path)
     except Exception as e:
         raise HTTPException(500, f"No se pudo sincronizar el recurso: {e}") from e
-    try:
-        sync_resource_to_selected_collection(rid)
-    except Exception:
-        pass
+    collection_sync = sync_resource_to_selected_collection(rid)
     if count > 0:
         new_status = "completado"
         with db() as con:
@@ -1972,7 +1982,8 @@ def resource_rescan(rid: int):
                 "UPDATE resources SET status=?, file_count=?, total_bytes=?, updated_at=? WHERE id=?",
                 (new_status, count, total, now_iso(), rid),
             )
-    return {"ok": True, "file_count": count, "total_bytes": total, "status": (new_status if count > 0 else r.get("status"))}
+    return {"ok": collection_sync.get('ok', True), "errors": collection_sync.get('errors', []),
+            "file_count": count, "total_bytes": total, "status": (new_status if count > 0 else r.get("status"))}
 
 
 @app.post("/api/resources/rescan-all")
@@ -1998,10 +2009,8 @@ def resources_rescan_all():
             continue
         try:
             count, total = index_resource(row["id"], path)
-            try:
-                sync_resource_to_selected_collection(row["id"])
-            except Exception:
-                pass
+            collection_sync = sync_resource_to_selected_collection(row["id"])
+            errors.extend(collection_sync.get('errors', []))
             files += count
             total_bytes += total
             scanned += 1
@@ -2029,13 +2038,15 @@ def resources_rescan_all():
 
 
 @app.post("/api/resources/{rid}/open")
-def resource_open(rid: int):
+def resource_open(rid: int, request: Request):
     r = get_resource(rid)
     if not r or not r.get("local_path"):
         raise HTTPException(404, "Este recurso todavía no tiene carpeta local")
     p = Path(r["local_path"])
     if not p.exists():
         raise HTTPException(404, "La carpeta ya no existe")
+    if not is_local_request(request):
+        return {"ok": True, "mode": "browser", "resource_id": rid}
     # Mantiene sincronizados conteo/tamaño aunque una descarga anterior haya terminado con aviso.
     try:
         count, total = index_resource(rid, p)
@@ -2048,13 +2059,8 @@ def resource_open(rid: int):
     except Exception:
         pass
     try:
-        if sys.platform.startswith("win"):
-            os.startfile(str(p))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(p)])
-        else:
-            subprocess.Popen(["xdg-open", str(p)])
-        return {"ok": True}
+        open_os_path(p)
+        return {"ok": True, "mode": "windows"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -2252,6 +2258,8 @@ def resource_organize_files(rid: int, payload: FileOrganizeIn):
 @library_write
 def resource_rename(rid: int, payload: RenameIn):
     _, root, src = safe_resource_path(rid, payload.path)
+    if src == root:
+        raise HTTPException(400, "Renombra el recurso desde Editar clasificación")
     if not src.exists():
         raise HTTPException(404, "El elemento ya no existe")
     raw = payload.new_name.strip()
@@ -2342,31 +2350,37 @@ def resource_upload_files(
         raw_rel = rel_paths[idx] if idx < len(rel_paths) else fallback
         relative = safe_upload_relative_path(raw_rel, fallback)
         destination = target_dir / relative
+        temporary = None
         try:
+            if not _is_within(destination, root):
+                raise ValueError('Ruta fuera del recurso')
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination = unique_destination(destination)
-            with destination.open("wb") as out:
+            temporary = destination.with_name(f'.sorprezz-upload-{uuid.uuid4()}.tmp')
+            with temporary.open("xb") as out:
                 while True:
                     chunk = upload.file.read(1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
+            temporary.replace(destination)
             copied.append(canonical_rel_path(str(destination.relative_to(root))))
         except Exception:
             skipped += 1
         finally:
+            if temporary:
+                temporary.unlink(missing_ok=True)
             try:
                 upload.file.close()
             except Exception:
                 pass
 
     count, total = index_resource(rid, root)
-    try:
-        sync_resource_to_selected_collection(rid)
-    except Exception:
-        pass
+    collection_sync = sync_resource_to_selected_collection(rid)
     return {
-        "ok": True, "copied": len(copied), "skipped": skipped, "items": copied,
+        "ok": not skipped and collection_sync.get('ok', True),
+        "errors": collection_sync.get('errors', []),
+        "copied": len(copied), "skipped": skipped, "items": copied,
         "file_count": count, "total_bytes": total, "target_path": canonical_rel_path(target_path),
     }
 
@@ -2437,6 +2451,7 @@ def resource_delete_items(rid: int, payload: DeleteItemsIn):
 
 
 @app.post("/api/resources/{rid}/files/zip")
+@library_write
 def resource_zip_selection(rid: int, payload: SelectionZipIn):
     if not payload.paths:
         raise HTTPException(400, "Selecciona al menos un archivo")
@@ -2447,10 +2462,10 @@ def resource_zip_selection(rid: int, payload: SelectionZipIn):
     out = unique_destination(out_dir / f"{name}.zip")
     added = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel in payload.paths:
+        for rel in dict.fromkeys(canonical_rel_path(p) for p in payload.paths):
             _, _, src = safe_resource_path(rid, rel)
             if src.exists() and src.is_file():
-                zf.write(src, arcname=src.name)
+                zf.write(src, arcname=canonical_rel_path(str(src.relative_to(root))))
                 added += 1
     if added == 0:
         try:
@@ -2462,27 +2477,31 @@ def resource_zip_selection(rid: int, payload: SelectionZipIn):
 
 
 @app.post("/api/resources/{rid}/file/open")
-def resource_open_file(rid: int, payload: dict):
+def resource_open_file(rid: int, payload: dict, request: Request):
     rel = str(payload.get("path", ""))
     _, _, target = safe_resource_path(rid, rel)
-    if not target.exists():
+    if not target.is_file():
         raise HTTPException(404, "Archivo no encontrado")
+    if not is_local_request(request):
+        return {"ok": True, "mode": "browser"}
     try:
         open_os_path(target)
-        return {"ok": True}
+        return {"ok": True, "mode": "windows"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
 @app.post("/api/resources/{rid}/folder/open")
-def resource_open_subfolder(rid: int, payload: dict):
+def resource_open_subfolder(rid: int, payload: dict, request: Request):
     rel = str(payload.get("path", ""))
     _, _, target = safe_resource_path(rid, rel)
     if not target.exists() or not target.is_dir():
         raise HTTPException(404, "Carpeta no encontrada")
+    if not is_local_request(request):
+        return {"ok": True, "mode": "browser"}
     try:
         open_os_path(target)
-        return {"ok": True}
+        return {"ok": True, "mode": "windows"}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -2740,8 +2759,12 @@ def global_assets(q: str = "", tag_id: Optional[int] = None, category_id: Option
         placeholders = ",".join("?" for _ in PREVIEW_EXTS)
         sql += f" AND LOWER(f.ext) IN ({placeholders})"
         params.extend(sorted(PREVIEW_EXTS))
-    sql += " ORDER BY r.name COLLATE NOCASE,f.rel_path COLLATE NOCASE LIMIT ?"
-    params.append(limit)
+    # Text matching includes accent-insensitive names and tags. Apply its limit
+    # after matching, so an older image beyond the first page remains searchable.
+    sql += " ORDER BY r.name COLLATE NOCASE,f.rel_path COLLATE NOCASE"
+    if not q.strip():
+        sql += " LIMIT ?"
+        params.append(limit)
     with db() as con:
         rows = [dict(x) for x in con.execute(sql, params)]
         tag_rows = [dict(x) for x in con.execute(
@@ -2766,6 +2789,8 @@ def global_assets(q: str = "", tag_id: Optional[int] = None, category_id: Option
         row["name"] = Path(row["rel_path"]).name
         row["previewable"] = str(row.get("ext") or "").lower() in PREVIEW_EXTS
         result.append(row)
+        if len(result) >= limit:
+            break
     return result
 
 
@@ -3145,6 +3170,7 @@ def collection_open(cid: int, request: Request, path: str = ''):
 
 
 @app.post("/api/collections/{cid}/zip")
+@library_write
 def collection_zip(cid: int, request: Request):
     with db() as con:
         c = con.execute("SELECT * FROM collections WHERE id=?", (cid,)).fetchone()
@@ -3155,8 +3181,8 @@ def collection_zip(cid: int, request: Request):
         raise HTTPException(404, "La carpeta física de la colección no existe")
     out_dir = library_root() / "Exportaciones"
     out_dir.mkdir(parents=True, exist_ok=True)
-    base = out_dir / f"{slug_folder(c['category'])}_{slug_folder(c['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    archive = shutil.make_archive(str(base), "zip", root_dir=str(src))
+    out = unique_destination(out_dir / f"{slug_folder(c['category'])}_{slug_folder(c['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+    archive = shutil.make_archive(str(out.with_suffix('')), "zip", root_dir=str(src))
     if is_local_request(request):
         try:
             open_os_path(out_dir)
@@ -3478,6 +3504,7 @@ def catalog_export_csv():
 
 
 @app.post("/api/resources/{rid}/zip")
+@library_write
 def resource_zip(rid: int):
     r = get_resource(rid)
     if not r or not r.get("local_path"):
@@ -3487,8 +3514,8 @@ def resource_zip(rid: int):
         raise HTTPException(404, "La carpeta local ya no existe")
     out_dir = library_root() / "Exportaciones"
     out_dir.mkdir(parents=True, exist_ok=True)
-    base = out_dir / f"{slug_folder(r['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    archive = shutil.make_archive(str(base), "zip", root_dir=str(src))
+    out = unique_destination(out_dir / f"{slug_folder(r['name'])}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+    archive = shutil.make_archive(str(out.with_suffix('')), "zip", root_dir=str(src))
     return {"ok": True, "path": archive, "download_path": library_relative_path(archive)}
 
 
