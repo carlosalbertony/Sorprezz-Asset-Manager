@@ -15,18 +15,8 @@ python -m pip install --upgrade pip
 pip install -r requirements-build.txt || goto :error
 
  echo [3/5] Compilando aplicacion...
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-pyinstaller --noconfirm --clean --windowed ^
-  --name SorprezzAssetManager ^
-  --icon assets\sorprezz.ico ^
-  --add-data "web;web" ^
-  --collect-all webview ^
-  --collect-submodules googleapiclient ^
-  --collect-submodules google_auth_oauthlib ^
-  --collect-submodules google.auth ^
-  --collect-submodules google.oauth2 ^
-  desktop.py || goto :error
+python build_windows.py || goto :error
+python verify_build.py || goto :error
 
  echo [4/5] Buscando Inno Setup...
 set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"

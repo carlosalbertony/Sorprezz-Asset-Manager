@@ -24,7 +24,7 @@
     </nav>
     <div class="sidebar-bottom">
       <button class="sidebar-sync" onclick="syncAllResources()">↻ <span>Sincronizar todo</span></button>
-      <div class="version">Versión 1.9.1</div>
+      <div class="version">Versión 1.9.2</div>
     </div>
   </aside>
 
@@ -277,6 +277,16 @@
       </div>
       <div class="toolbar collection-toolbar"><input id="collectionSearch" placeholder="Buscar colección por nombre, categoría o descripción..." oninput="loadCollections()"><button class="secondary" onclick="clearCollectionSearch()">Limpiar</button></div>
       <div class="panel"><div id="collectionsGrid" class="collection-grid"></div></div>
+    </section>
+
+    <section id="page-collection-browser" class="page">
+      <div class="panel">
+        <div class="panel-head"><div><h2 id="collectionBrowserTitle">Colección</h2><p id="collectionBrowserLocation" class="muted collection-location"></p></div><div class="quick-actions"><button class="secondary" onclick="go('collections')">← Volver a Colecciones</button><button class="secondary" onclick="syncCollection(COLLECTION_BROWSER.id)">↻ Sincronizar colección</button></div></div>
+        <div id="collectionBrowserError" class="notice hidden" role="status"></div>
+        <div id="collectionBrowserBreadcrumb" class="breadcrumb"></div>
+        <p id="collectionBrowserSummary" class="muted"></p>
+        <div id="collectionBrowserItems" class="asset-grid collection-browser-grid"></div>
+      </div>
     </section>
 
     <section id="page-trash" class="page">
